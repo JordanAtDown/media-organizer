@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# pre-commit hook: enforces code quality before each commit.
+# Activate with: git config core.hooksPath .githooks
+set -euo pipefail
+
+# Non-interactive shells (WSL) don't source .bashrc — load cargo manually.
+export PATH="$HOME/.cargo/bin:$PATH"
+
+echo "[pre-commit] Checking format..."
+cargo fmt --check
+
+echo "[pre-commit] Running clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "[pre-commit] Running unit tests..."
+cargo test --lib
+
+# Lint staged shell scripts and hooks, when shellcheck is available.
+if command -v shellcheck >/dev/null 2>&1; then
+    mapfile -t scripts < <(git diff --cached --name-only --diff-filter=ACM \
+        | grep -E '\.sh$|^\.githooks/' || true)
+    if [[ ${#scripts[@]} -gt 0 ]]; then
+        echo "[pre-commit] Linting shell scripts..."
+        shellcheck "${scripts[@]}"
+    fi
+fi
+
+echo "[pre-commit] All checks passed."

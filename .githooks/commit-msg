@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# commit-msg hook: validates Conventional Commits format.
+# Activate with: git config core.hooksPath .githooks
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG="$(cat "${COMMIT_MSG_FILE}")"
+
+# Allow merge commits and revert commits
+if echo "${COMMIT_MSG}" | grep -qE '^(Merge|Revert) '; then
+    exit 0
+fi
+
+PATTERN='^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)(\(.+\))?!?: .{1,72}'
+
+if ! echo "${COMMIT_MSG}" | grep -qE "${PATTERN}"; then
+    echo ""
+    echo "ERROR: Commit message does not follow Conventional Commits format."
+    echo ""
+    echo "  Expected: <type>(<scope>): <subject>"
+    echo "  Example:  feat(staging): journal prepared entries"
+    echo ""
+    echo "  Valid types: feat fix chore docs style refactor perf test build ci revert"
+    echo "  Subject: imperative mood, ≤72 characters, no trailing period"
+    echo ""
+    echo "  See .github/COMMIT_CONVENTION.md for details."
+    echo ""
+    exit 1
+fi
+
+exit 0
