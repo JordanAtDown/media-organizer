@@ -81,8 +81,14 @@ mod tests {
 
     #[test]
     fn nothing_listening_is_an_error() {
-        // Port 1 is privileged and unused.
-        assert!(matches!(probe("127.0.0.1:1"), Err(HealthError::Probe(_))));
+        // A port that was just released: the connection is refused at once.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let result = probe(&format!("127.0.0.1:{port}"));
+        assert!(matches!(result, Err(HealthError::Probe(_))));
     }
 
     #[test]
