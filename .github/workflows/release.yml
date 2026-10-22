@@ -50,10 +50,13 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # From the version heading to the next heading or the link references
+          # at the bottom of the file; `---` separators are dropped.
           awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { found = 1; next }
-            found && /^## \[/      { exit }
-            found                  { print }
+            $0 ~ "^## \\[" v "\\]"             { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            found && /^---$/                      { next }
+            found                                 { print }
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
             echo "No CHANGELOG.md section for $version" >&2
