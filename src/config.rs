@@ -314,7 +314,7 @@ fn invalid<T>(msg: impl Into<String>) -> Result<T, ConfigError> {
     Err(ConfigError::Invalid(msg.into()))
 }
 
-fn validate(config: &Config) -> Result<(), ConfigError> {
+pub fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.folders.is_empty() {
         return invalid("at least one [[folders]] entry is required");
     }

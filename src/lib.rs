@@ -1,6 +1,8 @@
 //! media-organizer: transactional photo and video organizer.
 
+pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod date_reader;
 pub mod dedup;
 pub mod error;

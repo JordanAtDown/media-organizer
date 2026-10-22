@@ -3,9 +3,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("failed to read config file: {0}")]
+    // The cause is the error's `source()`: repeating it in the message would
+    // print it twice in any chain-aware reporter (anyhow, tracing).
+    #[error("failed to read config file")]
     Io(#[from] std::io::Error),
-    #[error("failed to parse config file: {0}")]
+    #[error("failed to parse config file")]
     Parse(#[from] toml::de::Error),
     #[error("invalid configuration: {0}")]
     Invalid(String),
