@@ -132,7 +132,7 @@ Trois éléments côte à côte sur le Pi : le compose, `config.toml` (copié de
 # config.toml relie un input à une library par leur NOM (voir config.example.toml).
 services:
   media-organizer:
-    image: ghcr.io/jordanatdown/media-organizer:v1.1.0
+    image: ghcr.io/jordanatdown/media-organizer:v1.1.1
     container_name: media-organizer
     restart: unless-stopped
     environment:

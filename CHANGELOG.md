@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-10-22
+
+First production deployment fixes.
+
+### Fixed
+- Commits into an existing library no longer fail with `Operation not permitted`. The
+  directory chain is now chmod-ed only where the mode differs, and a refused `chmod`
+  (directory owned by another uid) is logged as a warning instead of failing the batch.
+- `--dry-run` in daemon mode reported the whole backlog on every poll. Each plan is now
+  reported once per process, then only when it changes.
+
+### Added
+- `lowercase_ext` (per folder, default `false`): render `{ext}` in lowercase.
+
+### Changed
+- Log timestamps use the local zone (`TZ`) and read `2026-10-22 20:25:42`.
+- **JSON log lines are flat**: `fields.message` and the other `fields.*` properties are now
+  top-level keys, and `target` is gone. Update any query or alert that reads the old keys.
+- The `text` log format is compact (no module path) and colors only on a terminal.
+
+---
+
 ## [1.1.0] - 2026-10-22
 
 Inputs and libraries are now declared by name, one volume each, and the work area is
