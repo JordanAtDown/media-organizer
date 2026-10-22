@@ -1,6 +1,6 @@
 [package]
 name = "media-organizer"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Organize photos and videos by capture date, transactionally, for a NAS-backed library"
 license = "MIT"
