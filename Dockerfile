@@ -31,10 +31,12 @@ RUN apt-get update \
 COPY --from=build /out/media-organizer /usr/local/bin/media-organizer
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# dev.dozzle.icon: logo shown by Dozzle (source: docker/dozzle-icon.svg, base64, <16 KB).
 LABEL org.opencontainers.image.title="media-organizer" \
       org.opencontainers.image.description="Organizes photos and videos by capture date, transactionally" \
       org.opencontainers.image.source="https://github.com/JordanAtDown/media-organizer" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      dev.dozzle.icon="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwZjc2NmUiLz48ZyB0cmFuc2Zvcm09InJvdGF0ZSgtMTAgMjYgMjIpIj48cmVjdCB4PSIxMCIgeT0iOSIgd2lkdGg9IjI4IiBoZWlnaHQ9IjI0IiByeD0iMyIgZmlsbD0iI2ZkZTY4YSIvPjxwYXRoIGQ9Ik0yMSAxNXYxMmwxMC02eiIgZmlsbD0iIzBmNzY2ZSIvPjwvZz48ZyB0cmFuc2Zvcm09InJvdGF0ZSg5IDM5IDIwKSI+PHJlY3QgeD0iMjYiIHk9IjciIHdpZHRoPSIyNiIgaGVpZ2h0PSIyNSIgcng9IjMiIGZpbGw9IiNmMGZkZmEiLz48Y2lyY2xlIGN4PSIzNCIgY3k9IjE0IiByPSIzIiBmaWxsPSIjZjU5ZTBiIi8+PHBhdGggZD0iTTI4IDMwbDgtMTAgNSA2IDMtMyA2IDd6IiBmaWxsPSIjMGY3NjZlIi8+PC9nPjxwYXRoIGQ9Ik02IDM3YTQgNCAwIDAgMSA0LTRoNDRhNCA0IDAgMCAxIDQgNHYxN2E0IDQgMCAwIDEtNCA0SDEwYTQgNCAwIDAgMS00LTR6IiBmaWxsPSIjY2NmYmYxIi8+PHBhdGggZD0iTTE0IDQyaDI2TTE0IDQ5aDE2IiBzdHJva2U9IiMwZjc2NmUiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+Cg=="
 
 ENV MO_CONFIG=/etc/media-organizer/config.toml \
     MO_STATE_DIR=/var/lib/media-organizer \

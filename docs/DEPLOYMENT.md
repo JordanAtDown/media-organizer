@@ -81,6 +81,9 @@ Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
   `status` à `ok` dans le corps.
 - Healthcheck Docker intégré : `media-organizer healthcheck` (intervalle 30 s, démarrage
   toléré 60 s).
+- Logo Dozzle : l'image porte le label `dev.dozzle.icon` (SVG en data URI, source dans
+  `docker/dozzle-icon.svg`, 16 Ko max). Pour un autre logo, redéfinir le label côté
+  `docker-compose` (`dev.dozzle.icon: <nom dashboard-icons>` ou data URI) ; `none` le masque.
 - Le conteneur monte des bind-mounts NFS : il a sa place dans la liste des conteneurs
   qu'un watchdog doit relancer quand le montage revient.
 
