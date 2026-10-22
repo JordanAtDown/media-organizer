@@ -21,7 +21,7 @@ refaites pas cette erreur.
 4. **Un doublon n'est jamais supprimé.** Même nom de destination + même taille + même
    empreinte BLAKE3 : la source reste en place et est mémorisée. On ne hache que si les
    tailles collisionnent.
-5. **La source n'est jamais réécrite.** L'injection EXIF se fait sur la copie en transit ;
+5. **La source n'est jamais réécrite.** L'injection EXIF se fait sur la copie dans la zone de travail ;
    la source n'est supprimée qu'après publication.
 6. **La chaîne de date est EXIF → QuickTime → nom de fichier → mtime, dans cet ordre exact.**
    Le mtime est un dernier recours dont la date est une *approximation* : `warn`, compté à

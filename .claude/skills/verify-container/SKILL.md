@@ -53,7 +53,7 @@ DOCKER_PLATFORM=linux/arm64 scripts/smoke-test.sh ghcr.io/jordanatdown/media-org
 ```
 
 La preuve finale est un `docker run --dry-run --once` sur le Pi lui-même contre un couple
-entrée/sortie jetable sous `/mnt/nas-nextcloud/` — hors périmètre de ce dépôt, mais la
+input/librairie jetables sur le NAS — hors périmètre de ce dépôt, mais la
 commande exacte est dans `docs/DEPLOYMENT.md`.
 
 ## Règles

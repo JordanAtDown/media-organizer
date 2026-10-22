@@ -77,7 +77,7 @@ Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
      ghcr.io/jordanatdown/media-organizer:vX.Y.Z validate-config
    ```
 
-2. **Essayer sur un couple entrée/sortie jetable**, en `--dry-run` d'abord : il exécute
+2. **Essayer sur un input et une librairie jetables**, en `--dry-run` d'abord : il exécute
    l'inventaire, la planification et la résolution complets et affiche, pour chaque
    fichier, la **source de sa date** et sa destination. On voit exactement combien de
    fichiers seraient datés par le `mtime` (approximation) et où ils iraient.
@@ -85,9 +85,13 @@ Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
    ```bash
    docker run --rm --user 1000:1000 -e TZ=Europe/Paris \
      -v ./config.toml:/etc/media-organizer/config.toml:ro \
-     -v ./state:/var/lib/media-organizer -v /mnt/nas-nextcloud:/mnt/nas-nextcloud \
+     -v ./state:/var/lib/media-organizer \
+     -v /mnt/nas/test/synchronisation:/inputs/test \
+     -v /mnt/nas/test/phototeque:/libraries/test \
      ghcr.io/jordanatdown/media-organizer:vX.Y.Z --dry-run --once
    ```
+
+   (avec `input = "test"` et `library = "test"` dans `config.toml`.)
 
 3. Seulement ensuite, lancer en démon sur les vrais dossiers.
 
