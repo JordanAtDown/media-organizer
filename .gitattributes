@@ -1,0 +1,13 @@
+# Enforce LF on files that run in the Linux container or are parsed by tools.
+*.sh   text eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+Dockerfile text eol=lf
+
+# Binary files
+*.mov binary
+*.mp4 binary
+*.jpg binary

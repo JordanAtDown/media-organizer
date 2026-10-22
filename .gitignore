@@ -1,0 +1,28 @@
+# Build outputs
+/target/
+/dist/
+
+# Runtime config (created from config.example.toml)
+/config.toml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.orig
+.vscode/
+.idea/
+
+# Logs and runtime state
+*.log
+*.jsonl
+no_date_cache.json
+duplicates.json
+hash_index.json
+
+# Env
+.env
+
+# Claude Code local overrides (machine-specific, not shared)
+.claude/settings.local.json

@@ -1,0 +1,37 @@
+[package]
+name = "media-organizer"
+version = "0.1.0"
+edition = "2021"
+description = "Organize photos and videos by capture date, transactionally, for a NAS-backed library"
+license = "MIT"
+repository = "https://github.com/JordanAtDown/media-organizer"
+
+[dependencies]
+anyhow = "1.0"
+blake3 = "1.8"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+kamadak-exif = "0.6"
+little_exif = "0.6"
+rayon = "1.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+signal-hook = "0.4"
+thiserror = "2.0"
+tiny_http = "0.12"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+walkdir = "2.5"
+
+[dev-dependencies]
+rstest = "0.28"
+tempfile = "3.27"
+
+# Tuned for speed on a Raspberry Pi 5, not binary size. No `panic = "abort"`:
+# the scanner relies on catch_unwind to isolate a malformed file.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = true
