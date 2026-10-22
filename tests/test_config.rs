@@ -141,3 +141,27 @@ fn defaults_keep_the_synology_clutter_out() {
         assert!(cfg.folders[0].excluded_dirs.iter().any(|e| e == d), "{d}");
     }
 }
+
+#[test]
+fn the_shipped_example_config_is_valid_and_documents_every_default() {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.toml");
+    let cfg = config::load(&example).expect("config.example.toml must stay valid");
+    let f = &cfg.folders[0];
+
+    // The example mirrors the built-in defaults, so it cannot silently drift.
+    let defaults = config::parse(FOLDER).unwrap();
+    assert_eq!(cfg.poll_interval_secs, defaults.poll_interval_secs);
+    assert_eq!(cfg.workers, defaults.workers);
+    assert_eq!(cfg.stability_secs, defaults.stability_secs);
+    assert_eq!(cfg.staging, defaults.staging);
+    assert_eq!(cfg.dedup, defaults.dedup);
+    assert_eq!(cfg.health, defaults.health);
+    assert_eq!(f.pattern, defaults.folders[0].pattern);
+    assert_eq!(f.extensions, defaults.folders[0].extensions);
+    assert_eq!(f.excluded_dirs, defaults.folders[0].excluded_dirs);
+    assert_eq!(f.use_mtime_fallback, defaults.folders[0].use_mtime_fallback);
+    assert_eq!(
+        f.write_exif_from_mtime,
+        defaults.folders[0].write_exif_from_mtime
+    );
+}

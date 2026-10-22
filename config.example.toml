@@ -1,0 +1,134 @@
+# media-organizer — configuration d'exemple.
+#
+# Copiez ce fichier, adaptez les chemins, puis validez-le sans rien démarrer :
+#     media-organizer --config config.toml validate-config
+#
+# Une clé inconnue est une ERREUR (le fichier est généré par Ansible : une faute de
+# frappe doit échouer bruyamment, pas être ignorée à 3 h du matin).
+
+# ── Boucle ────────────────────────────────────────────────────────────────────────
+# Secondes entre deux scans. C'est du polling : NFS ne propage pas les événements inotify.
+poll_interval_secs = 30
+
+# Threads des phases parallèles (planification et préparation). L'essentiel du temps est
+# de la latence NFS, pas du CPU : plus de threads que de cœurs est normal. 1 = séquentiel
+# et déterministe, pratique pour déboguer.
+workers = 8
+
+# Ignore les fichiers modifiés depuis moins de N secondes (upload encore en cours).
+# 0 désactive.
+stability_secs = 10
+
+# Dossier des caches persistants. Surchargé par --state-dir / MO_STATE_DIR.
+# À monter comme un volume distinct de la configuration (qui est en lecture seule).
+# state_dir = "/var/lib/media-organizer"
+
+# error | warn | info | debug | trace. RUST_LOG et --log-level l'emportent.
+log_level = "info"
+
+# ── Permissions ───────────────────────────────────────────────────────────────────
+# POURQUOI : l'export NFS est en all_squash. Un fichier ou un dossier créé avec le umask
+# du processus peut devenir illisible pour l'identité sous laquelle Nextcloud le sert,
+# qui répond alors 403. Le mode s'applique au fichier ET à chaque dossier de `output`
+# jusqu'à son parent.
+#
+# Ce sont des chaînes OCTALES : TOML n'a pas de littéral octal, donc `file_mode = 777`
+# serait lu en décimal et signifierait tout autre chose (refusé à la validation).
+# Omettre une clé = ne PAS appeler chmod du tout. Chaque dossier peut surcharger.
+[permissions]
+file_mode = "0666"
+dir_mode = "0777"
+
+# ── Zone de transit ───────────────────────────────────────────────────────────────
+# Tout le travail se fait ici ; `output` n'est touché qu'à la toute fin, par une rafale
+# de rename().
+[staging]
+# Par défaut : <output>/.media-organizer/staging.
+# DOIT être sur le même système de fichiers que `output` (vérifié au démarrage), sinon
+# le rename final redevient une copie et la propriété recherchée disparaît.
+# dir = "/mnt/nas-nextcloud/.media-organizer/staging"
+
+# Borne la durée de la rafale finale sur un premier passage massif (0 = illimité).
+# Le reste attend le scan suivant.
+max_batch = 1000
+
+# ── Doublons ──────────────────────────────────────────────────────────────────────
+# Un doublon = même nom de destination ET contenu identique (empreinte BLAKE3).
+# Jamais supprimé automatiquement : un faux positif détruirait une photo de famille.
+# Il reste dans `input`, est journalisé une fois et mémorisé (state_dir/duplicates.json).
+# On ne hache que les fichiers dont la taille collisionne : dans le cas nominal, rien.
+[dedup]
+enabled = true
+# Comparer aussi aux fichiers déjà rangés (sinon : seulement au sein du lot courant).
+check_existing = true
+
+# ── Fichiers sans date ────────────────────────────────────────────────────────────
+# Mémoire des fichiers qu'aucune source n'a pu dater. Avec use_mtime_fallback = true
+# (défaut), presque plus rien n'y entre ; il sert surtout si on le passe à false.
+[no_date_cache]
+enabled = true
+# Jours avant de réessayer un fichier mémorisé ; 0 = seulement si son mtime change.
+ttl_days = 0
+
+# ── Supervision ───────────────────────────────────────────────────────────────────
+# GET /livez  → 200 tant que le processus répond.
+# GET /healthz → JSON, 503 si plus aucun progrès (typiquement un montage NFS figé).
+[health]
+# "" désactive. Surchargé par --health-bind / MO_HEALTH_BIND.
+bind = "0.0.0.0:8080"
+# Après le démarrage, « aucun scan fini » reste `starting` pendant ce délai.
+startup_grace_secs = 120
+# `stale` après poll_interval_secs × stale_intervals sans progrès (plancher : 60 s).
+stale_intervals = 3
+
+# ── Dossiers ──────────────────────────────────────────────────────────────────────
+# Un [[folders]] par paire entrée/sortie. `output` ne doit pas être DANS un `input`
+# récursif (le scan se nourrirait de sa propre sortie).
+# Un `input` absent n'est pas fatal : NFS peut monter après le conteneur. Il est
+# signalé `degraded` dans /healthz.
+[[folders]]
+# Libellé dans les logs et /healthz (défaut : le chemin d'entrée).
+name = "telephone"
+input = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/synchronisation"
+output = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/photos/phototeque"
+
+# Jetons : {year} {month} {day} {hour} {min} {sec} {stem} {ext} {camera} {prefix}
+# {camera} = modèle d'appareil EXIF (assaini), « unknown » s'il est absent.
+# {counter} n'existe plus : utilisez on_conflict pour les collisions de noms.
+pattern = "{year}/{month}/{year}-{month}-{day}_{hour}{min}{sec}_{stem}{ext}"
+
+recursive = true
+photo_prefix = ""
+video_prefix = ""
+
+# Deux fichiers DIFFÉRENTS veulent le même nom (les contenus identiques sont des
+# doublons, traités à part) : rename (_1, _2…) | skip | overwrite.
+on_conflict = "rename"
+
+# Minuscules, sans le point.
+extensions = ["jpg", "jpeg", "png", "heic", "mp4", "mov", "avi", "mkv"]
+
+# Sous-arbres élagués du parcours (jamais descendus). Les dossiers Synology restent :
+# les données vivent toujours sur un volume DSM exporté en NFS, qui continue de générer
+# une vignette @eaDir par photo.
+excluded_dirs = [
+    "@eaDir", "@SynoEAStream", "@Recycle", "#recycle", "#snapshot", "@tmp",
+    ".stfolder", ".stversions", ".Trash", "$RECYCLE.BIN", "System Volume Information",
+]
+
+# Chaîne de date, dans cet ordre exact : EXIF → QuickTime (vidéos) → nom de fichier →
+# date de dernière modification (mtime).
+# Le mtime est un DERNIER RECOURS et une approximation : il est journalisé en `warn` et
+# compté à part dans /healthz. false = comportement v1.2.4 (un fichier sans date n'est
+# jamais déplacé).
+use_mtime_fallback = true
+
+# Écrire DateTimeOriginal dans le fichier quand la date vient du NOM (date explicite).
+write_exif_from_filename = true
+# Idem quand elle vient du MTIME. Désactivé : graver une approximation dans les
+# métadonnées d'une photo est bien plus dur à défaire que de laisser le fichier sans tag.
+write_exif_from_mtime = false
+
+# Surcharges des [permissions] globales, pour ce dossier :
+# file_mode = "0666"
+# dir_mode = "0777"
