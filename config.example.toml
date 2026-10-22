@@ -23,7 +23,10 @@ stability_secs = 10
 # À monter comme un volume distinct de la configuration (qui est en lecture seule).
 # state_dir = "/var/lib/media-organizer"
 
-# error | warn | info | debug | trace. RUST_LOG et --log-level l'emportent.
+# error | warn | info | debug | trace (défaut : "info").
+# Priorité (la plus haute d'abord) : variable RUST_LOG → flag --log-level / -v (ou
+# MO_LOG_LEVEL) → cette clé. Utilisez "debug" pour comprendre pourquoi un fichier est
+# ignoré ou voir les détails de l'injection EXIF.
 log_level = "info"
 
 # ── Permissions ───────────────────────────────────────────────────────────────────
@@ -92,12 +95,25 @@ name = "telephone"
 input = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/synchronisation"
 output = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/photos/phototeque"
 
-# Jetons : {year} {month} {day} {hour} {min} {sec} {stem} {ext} {camera} {prefix}
-# {camera} = modèle d'appareil EXIF (assaini), « unknown » s'il est absent.
-# {counter} n'existe plus : utilisez on_conflict pour les collisions de noms.
+# Jetons du motif :
+#   {year}    — année sur 4 chiffres (2024)
+#   {month}   — mois sur 2 chiffres (01-12)
+#   {day}     — jour sur 2 chiffres  (01-31)
+#   {hour}    — heure sur 2 chiffres (00-23)
+#   {min}     — minute sur 2 chiffres
+#   {sec}     — seconde sur 2 chiffres
+#   {stem}    — nom d'origine sans extension
+#   {ext}     — extension avec le point (.jpg)
+#   {camera}  — modèle d'appareil EXIF (assaini), « unknown » s'il est absent
+#   {prefix}  — photo_prefix pour une photo, video_prefix pour une vidéo
+# {counter} n'existe plus (il rendait toujours 0000) : utilisez on_conflict pour les
+# collisions de nom. Un motif qui l'utilise est refusé à la validation.
 pattern = "{year}/{month}/{year}-{month}-{day}_{hour}{min}{sec}_{stem}{ext}"
 
 recursive = true
+# Préfixes injectés via le jeton {prefix} (défaut : "")
+# photo_prefix = "IMG_"
+# video_prefix = "VID_"
 photo_prefix = ""
 video_prefix = ""
 
@@ -105,12 +121,23 @@ video_prefix = ""
 # doublons, traités à part) : rename (_1, _2…) | skip | overwrite.
 on_conflict = "rename"
 
-# Minuscules, sans le point.
+# Minuscules, sans le point. Seules ces extensions sont traitées : ajoutez celles que vous
+# voulez (heif, tif, 3gp…).
 extensions = ["jpg", "jpeg", "png", "heic", "mp4", "mov", "avi", "mkv"]
 
-# Sous-arbres élagués du parcours (jamais descendus). Les dossiers Synology restent :
-# les données vivent toujours sur un volume DSM exporté en NFS, qui continue de générer
-# une vignette @eaDir par photo.
+# Sous-arbres élagués du parcours (jamais descendus), comparés à chaque composant du
+# chemin. Les dossiers Synology restent : les données vivent toujours sur un volume DSM
+# exporté en NFS, qui continue de générer une vignette @eaDir par photo.
+#   @eaDir             — vignettes et métadonnées (Synology Photos / Photo Station)
+#   @SynoEAStream      — flux d'attributs étendus (DSM)
+#   @Recycle, #recycle — corbeille des dossiers partagés (selon la version de DSM)
+#   #snapshot          — instantanés
+#   @tmp               — fichiers temporaires DSM
+# D'autres dossiers DSM peuvent s'ajouter selon votre installation :
+#   @sharebin          — corbeille (anciennes versions de DSM)
+#   @database, @photos — base interne et répertoire de travail de Synology Photos
+#   @Recently-Snapshot — zone d'instantanés Btrfs (volumes Btrfs seulement)
+# Redéfinir la clé REMPLACE la liste : reprenez les entrées par défaut que vous gardez.
 excluded_dirs = [
     "@eaDir", "@SynoEAStream", "@Recycle", "#recycle", "#snapshot", "@tmp",
     ".stfolder", ".stversions", ".Trash", "$RECYCLE.BIN", "System Volume Information",
@@ -132,3 +159,15 @@ write_exif_from_mtime = false
 # Surcharges des [permissions] globales, pour ce dossier :
 # file_mode = "0666"
 # dir_mode = "0777"
+
+
+# ── Second dossier (exemple) ──────────────────────────────────────────────────────
+# Autant de blocs [[folders]] que de paires entrée/sortie. Ici, un dossier de
+# synchronisation d'un autre utilisateur, rangé avec une politique plus prudente.
+# [[folders]]
+# name = "synchro-jordan"
+# input = "/mnt/nas-nextcloud/jordan@exemple.org/files/synchronisation"
+# output = "/mnt/nas-nextcloud/jordan@exemple.org/files/photos/phototeque"
+# recursive = true
+# on_conflict = "skip"
+# extensions = ["jpg", "jpeg", "heic", "png", "mp4", "mov"]
