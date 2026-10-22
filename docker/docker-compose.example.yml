@@ -1,0 +1,20 @@
+# Exemple de déploiement. Épinglez toujours une version : il n'existe pas de tag `latest`.
+services:
+  media-organizer:
+    image: ghcr.io/jordanatdown/media-organizer:v1.0.0
+    container_name: media-organizer
+    restart: unless-stopped
+    environment:
+      # Uid/gid vus par le NAS : l'export NFS est en all_squash.
+      PUID: "1000"
+      PGID: "1000"
+      # Obligatoire : sans lui, les fichiers changent de dossier (UTC au lieu de l'heure locale).
+      TZ: "Europe/Paris"
+    volumes:
+      - ./config.toml:/etc/media-organizer/config.toml:ro
+      - ./state:/var/lib/media-organizer
+      # input et output sous le MÊME export NFS : la zone de transit (sous output)
+      # est alors sur le même système de fichiers, et le commit est un simple rename.
+      - /mnt/nas-nextcloud:/mnt/nas-nextcloud
+    ports:
+      - "127.0.0.1:8080:8080"

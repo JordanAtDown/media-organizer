@@ -1,0 +1,6 @@
+# Allow-list: the image build needs only these.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!docker/entrypoint.sh
