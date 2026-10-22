@@ -9,11 +9,11 @@
 use crate::error::ExifError;
 use crate::metadata::{exif_read, filename, isobmff};
 use chrono::{DateTime, Local};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Where a capture date came from, most to least trustworthy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateSource {
     Exif,
