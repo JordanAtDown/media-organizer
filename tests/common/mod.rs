@@ -31,8 +31,14 @@ impl Env {
     /// `top` is appended before `[[folders]]` (global keys and tables),
     /// `folder` inside the single folder entry.
     pub fn config(&self, top: &str, folder: &str) -> Config {
+        // A default pattern, unless the test brings its own.
+        let pattern = if folder.contains("pattern") {
+            ""
+        } else {
+            "pattern = \"{year}/{month}/{stem}{ext}\"\n"
+        };
         config::parse(&format!(
-            "stability_secs = 0\n{top}\n[[folders]]\ninput = \"{}\"\noutput = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n{folder}\n",
+            "stability_secs = 0\n{top}\n[[folders]]\ninput = \"{}\"\noutput = \"{}\"\n{pattern}{folder}\n",
             self.input.path().display(),
             self.output.path().display(),
         ))
