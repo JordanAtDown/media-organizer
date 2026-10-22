@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod date_reader;
+pub mod dedup;
 pub mod error;
 pub mod fsops;
 pub mod metadata;
