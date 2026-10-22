@@ -1,13 +1,19 @@
 //! PHASE 4 — preparation, then PHASE 5 — commit.
 //!
 //! Phase 4 materializes every resolved file in the staging area: a hard link
-//! when possible (free on one NFS export), a copy when the EXIF must be
-//! rewritten. **Nothing outside the staging area is touched.** Phase 5, in the
-//! same module, publishes the prepared files with `rename()`.
+//! when possible, a copy when the EXIF must be rewritten. **Nothing outside the
+//! staging area is touched.**
 //!
-//! The staging area must share `output`'s filesystem, so a commit is a
-//! metadata-only operation and the window in which a library scanner can see a
-//! half-organized tree shrinks to one quick burst.
+//! Phase 5 publishes in two steps so a library scanner never sees anything
+//! half-done:
+//!
+//! * **5a — place**: each file is moved (free on one filesystem) or copied (across
+//!   mounts) next to its destination under a hidden temporary name,
+//!   `.<name>.mo-part`. Its extension is not a media one, so a library scanner
+//!   such as Immich does not index it. This is the slow part.
+//! * **5b — publish**: once every file is in place, each one is linked to its final
+//!   name — atomically, without ever clobbering an existing file — in one quick
+//!   burst of metadata operations. A file therefore appears complete or not at all.
 
 use crate::config::Mode;
 use crate::date_reader::DateSource;
@@ -70,6 +76,17 @@ pub struct CommitReport {
     /// Entries that could not be published. They stay staged and journaled and
     /// are retried on the next scan; the rest of the batch is unaffected.
     pub failed: Vec<(Entry, String)>,
+}
+
+/// Hidden temporary name next to the destination: `dir/.<name>.mo-part`.
+///
+/// Its extension is not a media one, so a library scanner ignores it.
+pub fn temp_path(final_dest: &Path) -> PathBuf {
+    let name = final_dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    final_dest.with_file_name(format!(".{name}.mo-part"))
 }
 
 pub struct Staging {
@@ -266,50 +283,77 @@ impl Staging {
     // PHASE 5 — commit
     // -----------------------------------------------------------------------
 
-    /// Publish the entries with `rename()`. Sequential on purpose: it is one
-    /// quick burst of metadata operations, and ordering stays deterministic.
+    /// Publish the entries: place everything (5a), then publish in a burst (5b).
     ///
     /// A failure is reported and the batch **continues** — there is no global
-    /// rollback, so one bad file can never stall the others. Failed entries are
-    /// left staged and the journal is rewritten to hold exactly those.
+    /// rollback, so one bad file can never stall the others. Failed entries stay
+    /// journaled and are retried on the next scan.
     pub fn commit(&self, entries: Vec<Entry>) -> Result<CommitReport, StagingError> {
         let mut report = CommitReport::default();
+
+        // 5a — place: the slow, invisible part.
+        let mut ready = Vec::with_capacity(entries.len());
         for entry in entries {
-            match self.commit_one(&entry) {
+            match self.place_temp(&entry) {
+                Ok(()) => ready.push(entry),
+                Err(message) => {
+                    // A half-copied temp file is worthless: drop it.
+                    if entry.staged.exists() {
+                        let _ = std::fs::remove_file(temp_path(&entry.final_dest));
+                    }
+                    report.failed.push((entry, message));
+                }
+            }
+        }
+
+        // 5b — publish: one quick burst.
+        for entry in ready {
+            match self.publish(&entry) {
                 Ok(done) => report.committed.push(done),
                 Err(message) => report.failed.push((entry, message)),
             }
         }
+
         let remaining: Vec<Entry> = report.failed.iter().map(|(e, _)| e.clone()).collect();
         self.write_journal(&remaining)?;
         Ok(report)
     }
 
-    fn commit_one(&self, entry: &Entry) -> Result<Committed, String> {
-        let dest = &entry.final_dest;
-        let parent = dest.parent().unwrap_or(&self.output);
+    /// Step 5a: put the file next to its destination under its temporary name,
+    /// with the final mode already applied.
+    fn place_temp(&self, entry: &Entry) -> Result<(), String> {
+        let temp = temp_path(&entry.final_dest);
+        let parent = entry.final_dest.parent().unwrap_or(&self.output);
         fsops::ensure_dir_chain(&self.output, parent, entry.dir_mode.map(Mode))
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
 
-        // Reserve the name against *outside* writers (Nextcloud dropping a file
-        // mid-scan). Inside the batch names are already unique by construction.
-        let (target, placeholder) = if entry.overwrite {
-            (dest.clone(), false)
+        // Already placed by an earlier, interrupted run.
+        if !entry.staged.exists() && temp.exists() {
+            return Ok(());
+        }
+        // Same filesystem: a free rename. Across mounts it fails (EXDEV): copy.
+        if std::fs::rename(&entry.staged, &temp).is_err() {
+            std::fs::copy(&entry.staged, &temp)
+                .map_err(|e| format!("cannot copy to {}: {e}", temp.display()))?;
+        }
+        fsops::apply_mode(&temp, entry.file_mode.map(Mode))
+            .map_err(|e| format!("cannot set the mode of {}: {e}", temp.display()))
+    }
+
+    /// Step 5b: give the placed file its final name, then remove the source —
+    /// only now, once the destination is complete.
+    fn publish(&self, entry: &Entry) -> Result<Committed, String> {
+        let temp = temp_path(&entry.final_dest);
+        let target = if entry.overwrite {
+            std::fs::rename(&temp, &entry.final_dest)
+                .map_err(|e| format!("cannot publish {}: {e}", entry.final_dest.display()))?;
+            entry.final_dest.clone()
         } else {
-            (self.claim_name(dest)?, true)
+            self.link_into_place(&temp, &entry.final_dest)?
         };
 
-        if let Err(e) = std::fs::rename(&entry.staged, &target) {
-            if placeholder {
-                let _ = std::fs::remove_file(&target);
-            }
-            return Err(format!("cannot publish {}: {e}", target.display()));
-        }
-
-        if let Err(e) = fsops::apply_mode(&target, entry.file_mode.map(Mode)) {
-            warn!(path = %target.display(), error = %e, "published but chmod failed");
-        }
-        // The source is removed only now, after the destination is in place.
+        // After a copy the staged file is still here; after a rename it is gone.
+        let _ = std::fs::remove_file(&entry.staged);
         if let Err(e) = std::fs::remove_file(&entry.source) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 warn!(path = %entry.source.display(), error = %e,
@@ -326,8 +370,43 @@ impl Staging {
         })
     }
 
+    /// Link `temp` to the first free name, then drop the temporary name.
+    ///
+    /// `link()` is atomic and fails if the name exists, so an *outside* writer
+    /// (Nextcloud dropping a file mid-scan) is never overwritten, and the file
+    /// is complete the instant it appears. Where hard links are unsupported it
+    /// falls back to reserving the name with an empty file and renaming over it.
+    fn link_into_place(&self, temp: &Path, dest: &Path) -> Result<PathBuf, String> {
+        for attempt in 0..=MAX_SUFFIX {
+            let candidate = if attempt == 0 {
+                dest.to_path_buf()
+            } else {
+                with_suffix(dest, attempt)
+            };
+            match std::fs::hard_link(temp, &candidate) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(temp);
+                    return Ok(candidate);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return self.rename_over_reservation(temp, dest),
+            }
+        }
+        Err(format!("no free name for {}", dest.display()))
+    }
+
+    /// Fallback when hard links are unavailable: reserve a free name with
+    /// `create_new`, then `rename` the file over that reservation.
+    fn rename_over_reservation(&self, temp: &Path, dest: &Path) -> Result<PathBuf, String> {
+        let target = self.claim_name(dest)?;
+        if let Err(e) = std::fs::rename(temp, &target) {
+            let _ = std::fs::remove_file(&target);
+            return Err(format!("cannot publish {}: {e}", target.display()));
+        }
+        Ok(target)
+    }
+
     /// Atomically create an empty file at the first free name (`create_new`).
-    /// The following `rename` replaces that placeholder.
     fn claim_name(&self, dest: &Path) -> Result<PathBuf, String> {
         for attempt in 0..=MAX_SUFFIX {
             let candidate = if attempt == 0 {
@@ -350,15 +429,15 @@ impl Staging {
 
     /// Finish whatever an interrupted run left behind.
     ///
-    /// Each journaled entry whose staged file still exists is committed; an
-    /// entry whose staged file is gone was already published and is dropped.
+    /// Each journaled entry whose staged file (or placed temporary file) still
+    /// exists is committed; one with neither was already published and is dropped.
     /// Staged files that no journal line refers to (a crash during phase 4)
     /// are purged — their sources were never touched.
     pub fn replay(&self) -> Result<CommitReport, StagingError> {
         let (live, gone): (Vec<_>, Vec<_>) = self
             .read_journal()
             .into_iter()
-            .partition(|e| e.staged.exists());
+            .partition(|e| e.staged.exists() || temp_path(&e.final_dest).exists());
         if !gone.is_empty() {
             debug!(
                 entries = gone.len(),
@@ -787,5 +866,84 @@ mod tests {
         let f = Fixture::new();
         let report = f.staging(None, None).replay().unwrap();
         assert!(report.committed.is_empty() && report.failed.is_empty());
+    }
+
+    // -- two-step publication ------------------------------------------------
+
+    #[test]
+    fn temp_names_are_hidden_and_not_media() {
+        let t = temp_path(Path::new("/lib/2025/06/IMG_1.jpg"));
+        assert_eq!(t, PathBuf::from("/lib/2025/06/.IMG_1.jpg.mo-part"));
+        assert_eq!(t.extension().unwrap(), "mo-part");
+    }
+
+    #[test]
+    fn a_commit_leaves_no_temporary_file_in_the_library() {
+        let f = Fixture::new();
+        let s = f.staging(None, None);
+        let e = prepared(&f, &s, "a.jpg", b"x", "2025/a.jpg");
+        s.commit(vec![e]).unwrap();
+        let hidden: Vec<_> = tree(f.output.path())
+            .into_iter()
+            .filter(|p| p.to_string_lossy().ends_with(".mo-part"))
+            .collect();
+        assert!(hidden.is_empty(), "{hidden:?}");
+    }
+
+    #[test]
+    fn nothing_is_visible_under_its_final_name_before_the_publish_step() {
+        let f = Fixture::new();
+        let s = f.staging(None, None);
+        let e = prepared(&f, &s, "a.jpg", b"payload", "2025/a.jpg");
+
+        s.place_temp(&e).unwrap(); // step 5a only
+
+        assert!(!e.final_dest.exists(), "not published yet");
+        assert_eq!(
+            std::fs::read(temp_path(&e.final_dest)).unwrap(),
+            b"payload",
+            "complete under its temporary name"
+        );
+        assert!(
+            f.input.path().join("a.jpg").exists(),
+            "source untouched until the end"
+        );
+    }
+
+    #[test]
+    fn a_crash_between_place_and_publish_is_finished_by_replay() {
+        let f = Fixture::new();
+        let s = f.staging(Some(0o666), Some(0o777));
+        let e = prepared(&f, &s, "a.jpg", b"payload", "2025/a.jpg");
+        s.write_journal(std::slice::from_ref(&e)).unwrap();
+        s.place_temp(&e).unwrap(); // ...then the process dies
+        assert!(!e.staged.exists() || temp_path(&e.final_dest).exists());
+        drop(s);
+
+        let s = f.staging(Some(0o666), Some(0o777));
+        let report = s.replay().unwrap();
+
+        assert_eq!(report.committed.len(), 1);
+        assert_eq!(std::fs::read(&e.final_dest).unwrap(), b"payload");
+        assert!(!temp_path(&e.final_dest).exists());
+        assert!(!f.input.path().join("a.jpg").exists());
+        let mode = std::fs::metadata(&e.final_dest)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o666);
+    }
+
+    #[test]
+    fn a_failed_placement_cleans_its_partial_temporary_file() {
+        let f = Fixture::new();
+        let s = f.staging(None, None);
+        let mut e = prepared(&f, &s, "a.jpg", b"x", "2025/a.jpg");
+        e.final_dest = f.output.path().join("2025/a.jpg");
+        std::fs::remove_file(&e.staged).unwrap();
+        let report = s.commit(vec![e.clone()]).unwrap();
+        assert_eq!(report.failed.len(), 1);
+        assert!(!temp_path(&e.final_dest).exists());
     }
 }
