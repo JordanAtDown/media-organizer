@@ -6,4 +6,5 @@ pub mod error;
 pub mod fsops;
 pub mod metadata;
 pub mod naming;
+pub mod plan;
 pub mod state;
