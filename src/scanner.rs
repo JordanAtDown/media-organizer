@@ -150,6 +150,12 @@ impl Scanner {
         &self.state_dir
     }
 
+    /// Files read and hashed so far (index hits excluded). Stays at zero while
+    /// no two files collide on size — the property that keeps hashing cheap.
+    pub fn hashes_computed(&self) -> usize {
+        self.digester.hashes_computed()
+    }
+
     /// Sizes of the three persistent caches, for `/healthz`.
     pub fn cache_sizes(&self) -> (usize, usize, usize) {
         (
