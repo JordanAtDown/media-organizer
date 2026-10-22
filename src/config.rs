@@ -1,4 +1,5 @@
 use crate::error::ConfigError;
+use crate::naming;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use std::net::SocketAddr;
@@ -356,6 +357,8 @@ fn validate_folder(folder: &FolderConfig, staging: &StagingConfig) -> Result<(),
             folder.input.display()
         ));
     }
+    naming::validate_pattern(&folder.pattern)
+        .map_err(|e| ConfigError::Invalid(format!("{label}: pattern: {e}")))?;
     if folder.extensions.is_empty() {
         return invalid(format!("{label}: extensions must not be empty"));
     }
@@ -496,6 +499,8 @@ output = "/out"
     #[case("[health]\nbind = \"nonsense\"\n[[folders]]\ninput = \"/in\"\noutput = \"/out\"")]
     #[case("[[folders]]\ninput = \"/same\"\noutput = \"/same\"")]
     #[case("[[folders]]\ninput = \"/in\"\noutput = \"/in/sorted\"")]
+    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\npattern = \"{stem}_{counter}{ext}\"")]
+    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\npattern = \"{yeer}/{stem}\"")]
     #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = []")]
     #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = [\".jpg\"]")]
     #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = [\"JPG\"]")]
