@@ -1,0 +1,13 @@
+# Advisories we knowingly accept. Each entry needs a reason and an exit condition.
+[advisories]
+ignore = [
+    # quick-xml 0.37.5, pulled in by little_exif 0.6.23 (the latest release),
+    # which parses XMP when reading a file's metadata. media-organizer only
+    # reaches that code while injecting DateTimeOriginal into a *staged copy*
+    # of a file that has no capture date — a hostile XMP block in a file the
+    # user synced themselves could cause a denial of service (memory/time),
+    # not code execution or data exposure.
+    # Exit: drop these two lines as soon as little_exif depends on quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
