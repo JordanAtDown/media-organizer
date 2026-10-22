@@ -224,6 +224,11 @@ date et sa destination, et n'écrit rien.
 docker run --rm … ghcr.io/jordanatdown/media-organizer:vX.Y.Z --dry-run --once
 ```
 
+En démon (`MO_DRY_RUN=true` sans `--once`), rien ne quitte l'input : le même arriéré serait
+replanifié à chaque scan. Chaque fichier n'est donc affiché (`[dry-run] would move file`)
+qu'**une fois par processus**, puis seulement si son plan change (mtime ou destination
+différents) ou s'il quitte puis revient dans l'input. `--dry-run --once` affiche tout, une fois.
+
 ---
 
 ## Configuration

@@ -17,7 +17,7 @@ use crate::date_reader::DateSource;
 use crate::dedup::Digester;
 use crate::metadata::exif_write::TMP_PREFIX;
 use crate::plan::{extension_lower, plan_file, Candidate, FilePlan, PlanOutcome};
-use crate::resolve::{resolve, Resolution};
+use crate::resolve::{resolve, Resolution, Resolved};
 use crate::staging::Staging;
 use crate::state::{DuplicateCache, HashIndex, NoDateCache};
 use rayon::prelude::*;
@@ -120,6 +120,9 @@ pub struct Scanner {
     no_date: NoDateCache,
     duplicates: DuplicateCache,
     digester: Digester,
+    /// Dry-run only: what was already reported, so the daemon does not repeat it
+    /// every poll. Process memory, never persisted.
+    reported: ReportedPlans,
 }
 
 impl Scanner {
@@ -146,6 +149,7 @@ impl Scanner {
             no_date,
             duplicates,
             digester,
+            reported: ReportedPlans::default(),
         })
     }
 
@@ -255,6 +259,7 @@ impl Scanner {
         let candidates = self.inventory(folder, observer);
         sum.found = candidates.len();
         if candidates.is_empty() {
+            self.reported.update(&folder.input, &[]);
             self.finish_folder(&mut sum, staging.as_ref(), observer, &label);
             return sum;
         }
@@ -306,13 +311,19 @@ impl Scanner {
         }
 
         if self.dry_run {
-            for r in &resolved {
+            let fresh = self.reported.update(&folder.input, &resolved);
+            for r in &fresh {
                 info!(
                     from = %r.plan.source.display(), to = %r.final_dest.display(),
                     date_source = ?r.plan.capture.source, exif = r.plan.inject_exif,
                     "[dry-run] would move file"
                 );
             }
+            debug!(
+                reported = fresh.len(),
+                unchanged = resolved.len() - fresh.len(),
+                "[dry-run] plans"
+            );
             sum.organized = resolved.len();
             observer.phase(&label, Phase::Idle);
             return sum;
@@ -555,6 +566,34 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Dry-run memory: a file is reported again only when its plan changed.
+///
+/// Nothing leaves the input in dry-run, so a daemon would otherwise log the
+/// same backlog every poll. The key is the source path; the value is what the
+/// plan depends on (mtime and where the file would land). A fresh process
+/// reports everything once, which keeps `--dry-run --once` unchanged.
+#[derive(Default)]
+struct ReportedPlans(std::collections::HashMap<PathBuf, (u64, PathBuf)>);
+
+impl ReportedPlans {
+    /// The entries of `resolved` not reported yet (or changed since), recorded as
+    /// reported. Entries under `input` that left the plan are forgotten, so the
+    /// map stays bounded and a file that comes back is reported again.
+    fn update<'a>(&mut self, input: &Path, resolved: &'a [Resolved]) -> Vec<&'a Resolved> {
+        let current: std::collections::HashSet<&Path> =
+            resolved.iter().map(|r| r.plan.source.as_path()).collect();
+        self.0
+            .retain(|path, _| !path.starts_with(input) || current.contains(path.as_path()));
+        resolved
+            .iter()
+            .filter(|r| {
+                let key = (r.plan.mtime, r.final_dest.clone());
+                self.0.insert(r.plan.source.clone(), key.clone()) != Some(key)
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +637,125 @@ mod tests {
                 .folders
                 .remove(0)
         }
+    }
+
+    static LOGS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    /// Run `f` and return the info-level log lines it produced that mention
+    /// `marker` (a path unique to the calling test). The subscriber is global,
+    /// because per-thread capture races with tracing's callsite interest cache
+    /// when tests run in parallel.
+    fn captured_logs(marker: &Path, f: impl FnOnce()) -> String {
+        struct Sink;
+        impl std::io::Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                LOGS.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            tracing_subscriber::fmt()
+                .with_writer(|| Sink)
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .init();
+        });
+
+        let start = LOGS.lock().unwrap().len();
+        f();
+        let marker = marker.display().to_string();
+        let logs = LOGS.lock().unwrap();
+        logs[start..]
+            .lines()
+            .filter(|l| l.contains(&marker))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn would_move(logs: &str) -> usize {
+        logs.matches("[dry-run] would move file").count()
+    }
+
+    #[test]
+    fn dry_run_reports_a_backlog_once_across_scans() {
+        let env = Env::new();
+        env.put("IMG-20250626-WA0002.jpg", b"a");
+        env.put("IMG-20250627-WA0003.jpg", b"b");
+        let mut s = env.scanner("", true);
+
+        let first = captured_logs(env.input.path(), || {
+            env.run(&mut s);
+        });
+        let second = captured_logs(env.input.path(), || {
+            env.run(&mut s);
+        });
+
+        assert_eq!(would_move(&first), 2);
+        assert_eq!(would_move(&second), 0, "{second}");
+        // Nothing was moved: the summary still counts the whole plan.
+        assert_eq!(env.run(&mut s).organized, 2);
+    }
+
+    #[test]
+    fn dry_run_reports_new_and_changed_files_only() {
+        let env = Env::new();
+        env.put("IMG-20250626-WA0002.jpg", b"a");
+        let mut s = env.scanner("", true);
+        env.run(&mut s);
+
+        env.put("IMG-20250627-WA0003.jpg", b"b");
+        let logs = captured_logs(env.input.path(), || {
+            env.run(&mut s);
+        });
+        assert_eq!(would_move(&logs), 1);
+        assert!(logs.contains("IMG-20250627-WA0003"), "{logs}");
+
+        // A new mtime is a changed plan: reported again.
+        let changed = env.put("IMG-20250626-WA0002.jpg", b"a");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&changed)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let logs = captured_logs(env.input.path(), || {
+            env.run(&mut s);
+        });
+        assert_eq!(would_move(&logs), 1, "{logs}");
+        assert!(logs.contains("IMG-20250626-WA0002"), "{logs}");
+    }
+
+    #[test]
+    fn dry_run_forgets_files_that_left_the_input() {
+        let env = Env::new();
+        let f = env.put("IMG-20250626-WA0002.jpg", b"a");
+        let mut s = env.scanner("", true);
+        env.run(&mut s);
+        std::fs::remove_file(&f).unwrap();
+        env.run(&mut s);
+        assert!(s.reported.0.is_empty());
+
+        env.put("IMG-20250626-WA0002.jpg", b"a");
+        let logs = captured_logs(env.input.path(), || {
+            env.run(&mut s);
+        });
+        assert_eq!(would_move(&logs), 1);
+    }
+
+    #[test]
+    fn a_fresh_process_reports_everything_again() {
+        let env = Env::new();
+        env.put("IMG-20250626-WA0002.jpg", b"a");
+        env.run(&mut env.scanner("", true));
+        let logs = captured_logs(env.input.path(), || {
+            env.run(&mut env.scanner("", true));
+        });
+        assert_eq!(would_move(&logs), 1);
     }
 
     #[test]
