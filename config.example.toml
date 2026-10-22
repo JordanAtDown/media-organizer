@@ -44,7 +44,7 @@ dir_mode = "0777"
 # de rename().
 [staging]
 # Par défaut : <output>/.media-organizer/staging.
-# DOIT être sur le même système de fichiers que `output` (vérifié au démarrage), sinon
+# DOIT être sur le même système de fichiers que `output` (vérifié par `validate-config`, puis à chaque scan), sinon
 # le rename final redevient une copie et la propriété recherchée disparaît.
 # dir = "/mnt/nas-nextcloud/.media-organizer/staging"
 

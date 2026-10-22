@@ -97,7 +97,7 @@ métadonnées quelque part en amont.
 ## Zone de transit
 
 Par défaut `<output>/.media-organizer/staging/`. **Elle doit être sur le même système de
-fichiers que `output`** — vérifié au démarrage (`st_dev`), car sinon le commit redevient
+fichiers que `output`** — vérifié (`st_dev`) à la validation de la configuration puis à chaque scan, car sinon le commit redevient
 une copie inter-systèmes. Elle est élaguée du parcours.
 
 ## Journal de reprise

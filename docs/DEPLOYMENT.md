@@ -32,8 +32,9 @@ dépôt d'infrastructure. Ce dépôt-ci ne déploie rien lui-même.
 **`input` et `output` doivent être sous le même export NFS**, donc le même système de
 fichiers : la zone de transit (sous `output`) est alors sur le bon système de fichiers, le
 rangement se fait par `hard_link` (gratuit) puis `rename()` (métadonnées seules), et rien
-n'est jamais copié sur le réseau. Le démarrage **échoue** si la zone de transit et `output`
-sont sur des systèmes de fichiers différents.
+n'est jamais copié sur le réseau. Si la zone de transit et `output` sont sur des systèmes de fichiers différents, la
+configuration est **refusée** dès `validate-config` (quand les deux chemins existent) ; sinon
+chaque scan du dossier échoue avec une erreur explicite — jamais de copie silencieuse.
 
 L'entrypoint ne fait un `chown` **que** sur le dossier d'état — jamais sur les volumes
 média (ce serait une réécriture récursive de tout le NAS via NFS).
