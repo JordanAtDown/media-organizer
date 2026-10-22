@@ -8,13 +8,16 @@ refaites pas cette erreur.
 ## Invariants — ne pas casser
 
 1. **Le pipeline est transactionnel en 5 phases** (inventaire, planification, résolution,
-   préparation, commit). **Rien n'est écrit dans `output` avant la phase 5.** Toute
-   modification qui écrirait dans `output` depuis une autre phase est un bug, pas une
+   préparation, commit). **Rien n'est écrit dans la librairie avant la phase 5.** Toute
+   modification qui écrirait dans la librairie depuis une autre phase est un bug, pas une
    optimisation. Voir [docs/PIPELINE.md](../docs/PIPELINE.md).
-2. **La zone de transit partage le système de fichiers de `output`**, sinon le commit cesse
-   d'être une opération de métadonnées. Vérifié par `st_dev`.
-3. **Le journal** (`staging/journal.jsonl`) rend la reprise après coupure déterministe ; il
-   est écrit atomiquement *avant* le commit et rejoué à chaque scan.
+2. **La zone de travail est privée et hors de la librairie** (`<state_dir>/work/<dossier>`) :
+   Immich ne doit jamais voir de copie intermédiaire. La phase 5 place le fichier sous un
+   nom caché `.<nom>.mo-part` (extension non média, donc jamais indexé) puis le publie par
+   `link()` — atomique, n'écrase jamais, le fichier apparaît complet. Ne jamais publier un
+   fichier sous son vrai nom avant qu'il soit complet.
+3. **Le journal** (`<zone de travail>/journal.jsonl`) rend la reprise après coupure
+   déterministe ; il est écrit atomiquement *avant* le commit et rejoué à chaque scan.
 4. **Un doublon n'est jamais supprimé.** Même nom de destination + même taille + même
    empreinte BLAKE3 : la source reste en place et est mémorisée. On ne hache que si les
    tailles collisionnent.
@@ -45,7 +48,7 @@ NFS) :
   photo* y est toujours générée. L'élagage (`filter_entry`) est le gain de perf le plus
   direct — ne pas revenir à un filtre a posteriori ;
 - `file_mode` / `dir_mode` : l'export est en `all_squash` et Nextcloud répond 403 pour un
-  fichier illisible. Le mode s'applique à **toute la chaîne** de répertoires jusqu'à `output`,
+  fichier illisible. Le mode s'applique à **toute la chaîne** de répertoires jusqu'à la racine de la librairie,
   pas seulement au dernier. `set_permissions` ignore le umask ;
 - `Mode` est une **chaîne octale** (`"0777"`), jamais un entier TOML (lu en décimal) ;
 - le parseur ISOBMFF ne va que de `moov` à `mvhd` : les parseurs d'arbre complet échouent
@@ -56,20 +59,22 @@ NFS) :
 1. Après chaque fonctionnalité ou correctif, vérifier que `README.md`, `config.example.toml`
    **et** `docs/DEPLOYMENT.md` sont à jour. `DEPLOYMENT.md` est le contrat que lira le dépôt
    d'infrastructure.
-2. Toute nouvelle option de configuration apparaît dans `config.example.toml` **et** est
+2. Vocabulaire : **inputs** (sources), **libraries** (destinations finales, l'ancien
+   `output`), **work** (zone de travail interne). Ne pas réintroduire `output`.
+3. Toute nouvelle option de configuration apparaît dans `config.example.toml` **et** est
    couverte par un test de validation. `deny_unknown_fields` est partout : le fichier est
    templaté par Ansible, une faute de frappe doit échouer bruyamment.
-3. Toute modification du pipeline précise **dans quelle phase** elle intervient. Une écriture
+4. Toute modification du pipeline précise **dans quelle phase** elle intervient. Une écriture
    hors phases 4/5 est refusée en revue.
-4. **Fixtures binaires** : admises uniquement comme extraits de métadonnées sans charge média,
+5. **Fixtures binaires** : admises uniquement comme extraits de métadonnées sans charge média,
    sous ~10 Ko, avec provenance, commande d'extraction et valeur attendue documentées dans
    `tests/fixtures/README.md`. Sinon, générer à l'exécution (`tests/common/mod.rs`).
-5. Erreurs typées `thiserror` par module ; `anyhow` **uniquement** dans `main.rs`.
-6. Les tests d'intégration utilisent `--once`/`Scanner::scan_once` : jamais de `sleep` pour
+6. Erreurs typées `thiserror` par module ; `anyhow` **uniquement** dans `main.rs`.
+7. Les tests d'intégration utilisent `--once`/`Scanner::scan_once` : jamais de `sleep` pour
    attendre le démon.
-7. Une dépendance de plus se justifie. `Cargo.lock` est commité. `cargo audit` : les
+8. Une dépendance de plus se justifie. `Cargo.lock` est commité. `cargo audit` : les
    advisories acceptées sont dans `.cargo/audit.toml`, avec raison et condition de sortie.
-8. Documentation en français ; commits et commentaires de code en anglais.
+9. Documentation en français ; commits et commentaires de code en anglais.
 
 ## Ce qui est volontairement absent
 

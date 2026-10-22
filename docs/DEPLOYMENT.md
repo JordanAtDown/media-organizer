@@ -23,21 +23,38 @@ dépôt d'infrastructure. Ce dépôt-ci ne déploie rien lui-même.
 
 ## Volumes
 
+Trois catégories de dossiers, déclarées **une par une** (voir le README) :
+
 | Montage | Mode | Contenu |
 | --- | --- | --- |
 | `/etc/media-organizer/config.toml` | `ro` | configuration (templatable : clés inconnues = erreur) |
-| `/var/lib/media-organizer` | `rw` | caches persistants. **Volume distinct** de la configuration |
-| l'export NFS (ex. `/mnt/nas-nextcloud`) | `rw` | `input` **et** `output` |
+| `/var/lib/media-organizer` | `rw` | caches persistants **et zone de travail** (`work/`). Volume distinct de la configuration |
+| `/inputs/<nom>` | `rw` | un dossier **source** (synchronisation), un volume par dossier |
+| `/libraries/<nom>` | `rw` | un dossier qui **accueille une librairie**, un volume par dossier |
 
-**`input` et `output` doivent être sous le même export NFS**, donc le même système de
-fichiers : la zone de transit (sous `output`) est alors sur le bon système de fichiers, le
-rangement se fait par `hard_link` (gratuit) puis `rename()` (métadonnées seules), et rien
-n'est jamais copié sur le réseau. Si la zone de transit et `output` sont sur des systèmes de fichiers différents, la
-configuration est **refusée** dès `validate-config` (quand les deux chemins existent) ; sinon
-chaque scan du dossier échoue avec une erreur explicite — jamais de copie silencieuse.
+`config.toml` relie un input à une library par leur nom (`input = "jordan"`,
+`library = "jordan"`). Les racines `/inputs` et `/libraries` se règlent avec `inputs_root` et
+`libraries_root` ; des chemins absolus restent possibles.
+
+**Montages séparés = copie, pas lien physique.** Un `hard_link` est impossible entre deux
+montages (`EXDEV`), même s'ils viennent du même export NFS : chaque fichier est copié (lu sur
+l'input, écrit sur la librairie, via le Pi). Ce n'est pas un problème pour un flux normal ;
+un gros arriéré au premier passage est plus long, borné par `[staging] max_batch`.
+
+**La librairie ne reçoit que le résultat.** Tout le travail se fait dans la zone de travail
+privée ; la librairie reçoit des copies sous un nom caché `.<nom>.mo-part` (que les scanners
+de librairie comme Immich n'indexent pas : ils ne retiennent que les noms qui *finissent* par
+une extension média), puis les fichiers prennent leur vrai nom d'un coup, par un lien
+atomique qui n'écrase jamais un fichier existant. Après une coupure franche, d'éventuels
+`.mo-part` orphelins sont repris ou purgés au scan suivant.
+
+La zone de travail n'a pas à être montée. Pour la déboguer, montez `./work` sur
+`/var/lib/media-organizer/work`.
 
 L'entrypoint ne fait un `chown` **que** sur le dossier d'état — jamais sur les volumes
-média (ce serait une réécriture récursive de tout le NAS via NFS).
+média (ce serait une réécriture récursive de tout le NAS via NFS). Les uid/gid `PUID`/`PGID`
+doivent avoir les droits d'écriture sur chaque librairie et d'écriture/suppression sur chaque
+input (la source est supprimée après publication).
 
 ## Réseau et supervision
 

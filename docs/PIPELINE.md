@@ -1,8 +1,8 @@
 # Le pipeline transactionnel
 
-Un scan traverse cinq phases. **Rien n'est écrit dans `output` avant la phase 5.** C'est
-l'invariant central : toute modification qui écrirait dans `output` depuis une autre phase
-est un bug, pas une optimisation.
+Un scan traverse cinq phases. **Rien n'est écrit dans la librairie avant la phase 5.** C'est
+l'invariant central : toute modification qui écrirait dans la librairie depuis une autre
+phase est un bug, pas une optimisation.
 
 ```text
 PHASE 1  INVENTAIRE      séquentiel   parcours, élagage, filtres, caches
@@ -11,10 +11,10 @@ PHASE 2  PLANIFICATION   parallèle    date + modèle + destination voulue
    │                     LECTURE SEULE → plans
 PHASE 3  RÉSOLUTION      séquentiel   doublons écartés, noms finaux alloués
    │                     EN MÉMOIRE   → fichiers résolus
-PHASE 4  PRÉPARATION     parallèle    matérialisation en zone de transit + EXIF
-   │                     TRANSIT SEUL → entrées prêtes (+ journal)
-PHASE 5  COMMIT          séquentiel   rename(transit → destination), modes, unlink source
-                         RAPIDE       → une rafale d'opérations de métadonnées
+PHASE 4  PRÉPARATION     parallèle    matérialisation dans la zone de travail + EXIF
+   │                     TRAVAIL SEUL → entrées prêtes (+ journal)
+PHASE 5  COMMIT          séquentiel   5a copie sous un nom caché dans la librairie (lent, invisible)
+                                      5b liaison atomique vers le vrai nom (rafale rapide)
 ```
 
 Orchestration : [src/scanner.rs](../src/scanner.rs).
@@ -26,9 +26,16 @@ arborescence en parallèle : il a indexé des chemins qui disparaissaient quelqu
 plus tard (fichiers `isOffline`, échecs `ENOENT`), et les suffixes `_N` parasites venaient
 d'un `exists()` suivi, bien plus tard, d'un `rename()`.
 
-Ici la fenêtre pendant laquelle un fichier peut apparaître puis disparaître se réduit à la
-durée de la phase 5 : une rafale de `rename()`, opérations de métadonnées sur un même
-système de fichiers.
+Ici tout le travail se fait **hors de la librairie**, dans une zone privée. La librairie ne
+reçoit que le résultat final : les copies se font sous un nom caché que les scanners
+n'indexent pas, puis tous les fichiers prennent leur vrai nom d'un coup. La fenêtre pendant
+laquelle un fichier peut apparaître puis disparaître se réduit à cette dernière rafale
+d'opérations de métadonnées.
+
+**Pourquoi Immich ne voit pas les noms temporaires.** Immich parcourt la librairie avec le
+motif `<chemin>/**/*{extensions média supportées}` : seuls les noms qui *finissent* par une
+extension média connue sont candidats. `.IMG_1.jpg.mo-part` finit par `.mo-part` (et est de
+plus un fichier caché). Aucune exclusion n'est à configurer dans Immich.
 
 ## Les phases
 
@@ -58,25 +65,34 @@ On ne hache que les fichiers dont la taille collisionne : si toutes les tailles 
 **aucun hachage n'est calculé**.
 
 **4 — Préparation** ([src/staging.rs](../src/staging.rs), `Staging::prepare`). Chaque
-fichier est matérialisé dans la zone de transit :
+fichier est matérialisé dans la zone de travail privée :
 
 | Cas | Opération |
 | --- | --- |
-| cas courant | `hard_link` — gratuit, `input` et `output` sont sous le même export |
+| source et zone de travail sur le même montage | `hard_link` — gratuit |
 | injection EXIF nécessaire | `copy` puis écriture du tag : on ne touche jamais l'inode de la source |
-| `hard_link` impossible | repli sur `copy` |
+| montages différents (cas normal avec un volume par dossier) | `copy` |
 
 **La source n'est donc jamais réécrite**, contrairement à l'ancienne version.
 
-**5 — Commit** (`Staging::commit`). Pour chaque entrée : création de la chaîne de
-répertoires (et `dir_mode` sur *chacun* jusqu'à `output`), réservation du nom par
-`create_new` (garde contre un écrivain **externe**, ex. Nextcloud déposant un fichier en
-cours de scan), `rename(transit → destination)`, `file_mode`, puis suppression de la source.
+**5 — Commit** (`Staging::commit`), en deux temps :
+
+- **5a — placement** (lent, invisible). Pour chaque entrée : création de la chaîne de
+  répertoires dans la librairie (avec `dir_mode` sur *chacun*, de la racine de la librairie
+  au parent), puis le fichier est déplacé (`rename`, gratuit sur un même montage) ou **copié**
+  (montages différents) à côté de sa destination sous le nom `.<nom>.mo-part`, avec `file_mode`
+  déjà appliqué.
+- **5b — publication** (rafale rapide). Une fois *tout* placé, chaque fichier reçoit son vrai
+  nom par `link()`, atomique et qui **échoue si le nom existe** : un écrivain **externe**
+  (ex. Nextcloud déposant un fichier en cours de scan) n'est jamais écrasé — on passe au
+  suffixe suivant. Le fichier est complet à l'instant où il apparaît. Sur un système de
+  fichiers sans liens physiques, repli sur une réservation `create_new` puis `rename`.
+
 La source n'est supprimée qu'**après** la publication.
 
-Un échec est journalisé et **le lot continue** : l'entrée reste en transit et dans le
-journal, réessayée au scan suivant. Pas de rollback global — un seul fichier corrompu ne
-doit jamais bloquer toute progression.
+Un échec est journalisé et **le lot continue** : l'entrée reste dans le journal, réessayée au
+scan suivant. Pas de rollback global — un seul fichier corrompu ne doit jamais bloquer toute
+progression.
 
 ## La chaîne de date
 
@@ -94,15 +110,20 @@ d'injection EXIF par défaut (`write_exif_from_mtime = false`). `/healthz` compt
 sources séparément : un pic de `mtime` signifie que les fichiers entrants perdent leurs
 métadonnées quelque part en amont.
 
-## Zone de transit
+## Zone de travail
 
-Par défaut `<output>/.media-organizer/staging/`. **Elle doit être sur le même système de
-fichiers que `output`** — vérifié (`st_dev`) à la validation de la configuration puis à chaque scan, car sinon le commit redevient
-une copie inter-systèmes. Elle est élaguée du parcours.
+Privée au service : `<state_dir>/work/<nom du dossier>/` par défaut (réglable avec
+`work_dir`). Elle contient les fichiers en cours de traitement et le journal. **Elle n'a pas
+besoin d'être montée**, sauf pour déboguer. Elle est volontairement *hors* de la librairie :
+Immich ne voit jamais de copie intermédiaire. Chaque `[[folders]]` a son propre sous-dossier,
+d'où l'unicité obligatoire des noms.
+
+Elle peut vivre sur n'importe quel système de fichiers : si ce n'est pas celui de la librairie,
+la phase 5a copie au lieu de déplacer.
 
 ## Journal de reprise
 
-`staging/journal.jsonl`, une ligne JSON par entrée, écrit **atomiquement avant** le commit :
+`<zone de travail>/journal.jsonl`, une ligne JSON par entrée, écrit **atomiquement avant** le commit :
 
 ```json
 {"staged":"/…/staging/9f2c…e1.jpg","final_dest":"/…/2025/06/2025-06-26_…jpg",
@@ -114,9 +135,10 @@ une copie inter-systèmes. Elle est élaguée du parcours.
 
 Rejoué au démarrage de chaque scan (et par `media-organizer recover`) :
 
-- entrée dont le fichier de transit existe → committée ;
-- entrée dont le fichier de transit a disparu → déjà publiée, abandonnée ;
-- fichier de transit sans ligne de journal (coupure *pendant* la préparation) → purgé ; ses
+- entrée dont le fichier de travail, ou le fichier temporaire `.mo-part` déjà placé dans la
+  librairie, existe encore → committée ;
+- entrée où il n'y a plus ni l'un ni l'autre → déjà publiée, abandonnée ;
+- fichier de travail sans ligne de journal (coupure *pendant* la préparation) → purgé ; ses
   sources n'ont jamais été touchées et seront refaites.
 
 Un nombre d'entrées « en attente » non nul de façon persistante (`pending_in_staging` dans

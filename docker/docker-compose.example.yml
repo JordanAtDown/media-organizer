@@ -1,7 +1,13 @@
 # Exemple de déploiement. Épinglez toujours une version : il n'existe pas de tag `latest`.
+#
+# Trois catégories de dossiers, chacune montée séparément :
+#   /inputs/<nom>     les dossiers SOURCES (synchronisation)
+#   /libraries/<nom>  les dossiers qui ACCUEILLENT les librairies (destination finale)
+#   la zone de travail (transit, journal) est interne : elle vit dans ./state, rien à monter.
+# config.toml relie un input à une library par leur NOM (voir config.example.toml).
 services:
   media-organizer:
-    image: ghcr.io/jordanatdown/media-organizer:v1.0.0
+    image: ghcr.io/jordanatdown/media-organizer:v1.1.0
     container_name: media-organizer
     restart: unless-stopped
     environment:
@@ -16,12 +22,21 @@ services:
     volumes:
       # Configuration, en lecture seule.
       - ./config.toml:/etc/media-organizer/config.toml:ro
-      # Caches persistants (doublons, empreintes, fichiers sans date). Volume distinct.
+      # Caches persistants (doublons, empreintes, fichiers sans date) et zone de travail.
       - ./state:/var/lib/media-organizer
-      # input ET output sous le MÊME export NFS : la zone de transit (sous output) est
-      # alors sur le même système de fichiers et le commit est un simple rename().
-      # Le chemin dans le conteneur doit être celui écrit dans config.toml.
-      - /mnt/nas-nextcloud:/mnt/nas-nextcloud
+
+      # ── inputs : un volume par dossier de synchronisation ──────────────────────────
+      - /mnt/nas/nextcloud/jordan/files/synchronisation:/inputs/jordan
+      - /mnt/nas/nextcloud/sylvie/files/synchronisation:/inputs/sylvie
+      - /mnt/nas/drive/Synchronisation/Sony Alpha 7:/inputs/sony
+
+      # ── libraries : un volume par librairie ────────────────────────────────────────
+      - /mnt/nas/nextcloud/jordan/files/photos/phototeque:/libraries/jordan
+      - /mnt/nas/nextcloud/sylvie/files/photos/phototeque:/libraries/sylvie
+      - /mnt/nas/homes/jordan/Sony A7II:/libraries/sony
+
+      # Pour déboguer la zone de travail, la rendre visible (facultatif) :
+      # - ./work:/var/lib/media-organizer/work
     ports:
       # /healthz et /livez, limités à la machine (Gatus, healthcheck local…).
       - "127.0.0.1:8080:8080"

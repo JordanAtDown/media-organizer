@@ -31,8 +31,9 @@ métier éprouvée, architecture refaite pour le Pi.
   reste bloqué dans le dossier de dépôt (désactivable : `use_mtime_fallback = false`).
 - **Détection de doublons** : même nom de destination *et* même contenu. Le doublon reste en
   place, mémorisé, **jamais supprimé**.
-- **Transactionnel** : tout est préparé dans une zone de transit, puis publié d'un coup. Une
-  coupure en cours de route se rattrape au scan suivant (journal de reprise).
+- **Transactionnel** : tout est traité dans une zone de travail privée, puis publié d'un
+  coup dans la librairie. Une coupure en cours de route se rattrape au scan suivant
+  (journal de reprise).
 - Conflits de nom entre fichiers différents : `rename`, `skip` ou `overwrite`.
 - Logs JSON sur stdout, arrêt propre sur SIGTERM, `/healthz` pour la supervision.
 
@@ -44,12 +45,13 @@ toutes les poll_interval_secs (30 s)
    1 INVENTAIRE      parcours, élagage des dossiers parasites, filtres
    2 PLANIFICATION   date (EXIF → QuickTime → nom → mtime) + destination      lecture seule
    3 RÉSOLUTION      doublons écartés, noms finaux alloués                     en mémoire
-   4 PRÉPARATION     lien physique ou copie en zone de transit (+ EXIF)        transit seul
-   5 COMMIT          rename() vers la destination, modes, suppression source   rafale rapide
+   4 PRÉPARATION     copie dans la zone de travail privée (+ EXIF)             zone de travail seule
+   5 COMMIT          copie sous un nom caché dans la librairie, puis           rafale rapide
+                     renommage atomique de tous les fichiers
 ```
 
-**Rien n'est écrit dans `output` avant la phase 5.** Détails et invariants :
-[docs/PIPELINE.md](docs/PIPELINE.md).
+**La librairie n'est pas touchée avant la phase 5**, et un fichier n'y apparaît sous son vrai
+nom qu'une fois complet. Détails et invariants : [docs/PIPELINE.md](docs/PIPELINE.md).
 
 ---
 
@@ -89,16 +91,48 @@ version épinglée. Pour migrer, on change le numéro dans le dépôt d'infrastr
 relance le déploiement. Il n'y a **pas de tag `latest`** : une version se désigne toujours
 exactement.
 
+### Les trois catégories de dossiers
+
+Le service distingue trois rôles, et le compose les déclare **un par un** — pas de méga-montage :
+
+| Catégorie | Rôle | Dans le conteneur |
+| --- | --- | --- |
+| **inputs** | dossiers **sources** : ceux qui servent à la synchronisation | un volume par dossier, sous `/inputs/<nom>` |
+| **libraries** | dossiers qui **accueillent les librairies** (destination finale) | un volume par dossier, sous `/libraries/<nom>` |
+| **work** | zone de travail du service (transit, journal) | interne, dans `state/` — à monter seulement pour déboguer |
+
+`config.toml` relie un input à une library **par leur nom**, sans réécrire de chemin :
+
+```toml
+[[folders]]
+input   = "jordan"      # → /inputs/jordan
+library = "jordan"      # → /libraries/jordan
+
+[[folders]]
+input      = "sony"
+library    = "sony"
+extensions = ["arw"]
+```
+
+Un nom sans `/` est cherché sous `/inputs` ou `/libraries` (réglable avec `inputs_root` et
+`libraries_root`) ; un chemin absolu reste possible.
+
 ### Exemple de `docker-compose.yml`
 
-Trois fichiers côte à côte sur le Pi : le compose, `config.toml` (copié de
+Trois éléments côte à côte sur le Pi : le compose, `config.toml` (copié de
 [config.example.toml](config.example.toml)) et un dossier `state/`.
 
 ```yaml
 # Exemple de déploiement. Épinglez toujours une version : il n'existe pas de tag `latest`.
+#
+# Trois catégories de dossiers, chacune montée séparément :
+#   /inputs/<nom>     les dossiers SOURCES (synchronisation)
+#   /libraries/<nom>  les dossiers qui ACCUEILLENT les librairies (destination finale)
+#   la zone de travail (transit, journal) est interne : elle vit dans ./state, rien à monter.
+# config.toml relie un input à une library par leur NOM (voir config.example.toml).
 services:
   media-organizer:
-    image: ghcr.io/jordanatdown/media-organizer:v1.0.0
+    image: ghcr.io/jordanatdown/media-organizer:v1.1.0
     container_name: media-organizer
     restart: unless-stopped
     environment:
@@ -113,12 +147,21 @@ services:
     volumes:
       # Configuration, en lecture seule.
       - ./config.toml:/etc/media-organizer/config.toml:ro
-      # Caches persistants (doublons, empreintes, fichiers sans date). Volume distinct.
+      # Caches persistants (doublons, empreintes, fichiers sans date) et zone de travail.
       - ./state:/var/lib/media-organizer
-      # input ET output sous le MÊME export NFS : la zone de transit (sous output) est
-      # alors sur le même système de fichiers et le commit est un simple rename().
-      # Le chemin dans le conteneur doit être celui écrit dans config.toml.
-      - /mnt/nas-nextcloud:/mnt/nas-nextcloud
+
+      # ── inputs : un volume par dossier de synchronisation ──────────────────────────
+      - /mnt/nas/nextcloud/jordan/files/synchronisation:/inputs/jordan
+      - /mnt/nas/nextcloud/sylvie/files/synchronisation:/inputs/sylvie
+      - /mnt/nas/drive/Synchronisation/Sony Alpha 7:/inputs/sony
+
+      # ── libraries : un volume par librairie ────────────────────────────────────────
+      - /mnt/nas/nextcloud/jordan/files/photos/phototeque:/libraries/jordan
+      - /mnt/nas/nextcloud/sylvie/files/photos/phototeque:/libraries/sylvie
+      - /mnt/nas/homes/jordan/Sony A7II:/libraries/sony
+
+      # Pour déboguer la zone de travail, la rendre visible (facultatif) :
+      # - ./work:/var/lib/media-organizer/work
     ports:
       # /healthz et /livez, limités à la machine (Gatus, healthcheck local…).
       - "127.0.0.1:8080:8080"
@@ -127,12 +170,11 @@ services:
 
 Pas à pas :
 
-1. Adaptez `config.toml` : les chemins `input` et `output` sont ceux **vus depuis le
-   conteneur**, donc ceux du montage NFS (`/mnt/nas-nextcloud/…`), identiques des deux côtés
-   du `-v`.
-2. `PUID` / `PGID` : l'uid et le gid qui ont les droits d'écriture sur l'export NFS. Le
-   dossier `state/` leur est attribué automatiquement ; les volumes média ne sont **jamais**
-   modifiés (pas de `chown` récursif sur le NAS).
+1. Dans le compose, montez **chaque** dossier source sous `/inputs/<nom>` et **chaque**
+   librairie sous `/libraries/<nom>` ; le `<nom>` est celui écrit dans `config.toml`.
+2. `PUID` / `PGID` : l'uid et le gid qui ont les droits sur le NAS. Seul `state/` leur est
+   attribué automatiquement ; les volumes média ne sont **jamais** modifiés (pas de `chown`
+   récursif sur le NAS).
 3. Validez, puis essayez en simulation avant le premier vrai passage :
 
    ```bash
@@ -145,6 +187,12 @@ Pas à pas :
 5. Pour changer de version : modifiez le tag dans `image:` puis `docker compose pull &&
    docker compose up -d`.
 
+**Ce que coûtent des montages séparés.** Un lien physique est impossible entre deux
+montages : chaque fichier est donc **copié** (lu sur l'input, écrit sur la librairie, en
+passant par le Pi) au lieu d'être lié. Pour des photos qui arrivent au fil de l'eau c'est
+négligeable ; un premier passage sur un gros arriéré sera simplement plus long
+(`[staging] max_batch` le découpe en lots).
+
 Publier une version : [RELEASING.md](RELEASING.md). Contrat complet de déploiement (volumes,
 variables, supervision, première mise en service) : [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
@@ -155,7 +203,7 @@ variables, supervision, première mise en service) : [docs/DEPLOYMENT.md](docs/D
 | Élément | Valeur |
 | --- | --- |
 | Machine | Raspberry Pi 5 (**image `linux/arm64` uniquement**) |
-| Stockage média | NAS monté en **NFS** ; `input` et `output` sous le **même export** |
+| Stockage média | NAS monté en **NFS** ; chaque input et chaque librairie peut être un montage distinct |
 | Moteur | Docker avec Compose |
 
 ---
@@ -186,14 +234,16 @@ inconnue est refusée. Points à connaître :
 - **`file_mode` / `dir_mode`** sont des *chaînes octales* (`"0777"`), pas des entiers.
 - **`TZ` est obligatoire** dans le conteneur : sans lui, les fichiers changent de dossier
   (UTC au lieu de l'heure locale). Le fuseau détecté est journalisé au démarrage.
-- La **zone de transit** doit être sur le même système de fichiers que `output`.
+- La **zone de travail** est privée au service (`<state_dir>/work`) : inutile de la monter.
+- Chaque `[[folders]]` a un nom **unique** (par défaut, celui de l'input) : c'est aussi le nom
+  de son sous-dossier de travail.
 
 ```toml
 poll_interval_secs = 30
 
 [[folders]]
-input        = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/synchronisation"
-output       = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/photos/phototeque"
+input        = "jordan"      # → /inputs/jordan
+library      = "jordan"      # → /libraries/jordan
 pattern      = "{year}/{month}/{year}-{month}-{day}_{hour}{min}{sec}_{stem}{ext}"
 recursive    = true
 photo_prefix = "IMG_"        # optionnel, défaut : ""

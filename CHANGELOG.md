@@ -11,6 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-10-22
+
+Inputs and libraries are now declared by name, one volume each, and the work area is
+private to the service.
+
+### Changed
+- **Breaking:** `output` is renamed `library`.
+- **Breaking:** `[staging] dir` is removed; the staging area moves out of the library into a
+  private work directory (`work_dir`, default `<state_dir>/work`, one subdirectory per
+  folder). Each `[[folders]]` must have a unique `name`.
+- Publishing is now two steps: each file is placed next to its destination under a hidden
+  temporary name (`.<name>.mo-part`, never indexed by library scanners such as Immich), then
+  every file is linked to its final name atomically. A file appears complete or not at all,
+  and an outside writer's file is never overwritten.
+- The same-filesystem check between staging and output is gone: separate mounts are
+  supported (files are copied across them instead of hard-linked).
+
+### Added
+- `inputs_root` / `libraries_root`: a bare `input` or `library` name is resolved under
+  `/inputs/<name>` or `/libraries/<name>`, so a compose file mounts each folder separately.
+- `work_dir` setting.
+
+---
+
 ## [1.0.0] - 2026-10-22
 
 First release of `media-organizer`, a rewrite of `syno-media-organizer` as an arm64
@@ -47,5 +71,6 @@ container for a Raspberry Pi 5 that mounts the NAS over NFS.
 - DSM packaging (`.spk`, GPG signing, `packages.json`), the musl/Zig cross toolchain, the
   `clock_gettime` override, file logging.
 
-[Unreleased]: https://github.com/JordanAtDown/media-organizer/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/JordanAtDown/media-organizer/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/JordanAtDown/media-organizer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JordanAtDown/media-organizer/releases/tag/v1.0.0
