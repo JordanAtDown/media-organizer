@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.2] - 2026-10-22
+
+### Added
+- The image now carries a `dev.dozzle.icon` label (folder with a photo and a video card)
+  so Dozzle shows a media-organizer logo. Source: `docker/dozzle-icon.svg`.
+
+---
+
 ## [1.1.1] - 2026-10-22
 
 First production deployment fixes.
