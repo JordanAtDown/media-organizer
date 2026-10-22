@@ -5,6 +5,7 @@ pub mod date_reader;
 pub mod dedup;
 pub mod error;
 pub mod fsops;
+pub mod health;
 pub mod metadata;
 pub mod naming;
 pub mod plan;
