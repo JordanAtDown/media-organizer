@@ -3,5 +3,6 @@
 pub mod config;
 pub mod date_reader;
 pub mod error;
+pub mod fsops;
 pub mod metadata;
 pub mod naming;
