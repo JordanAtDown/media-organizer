@@ -5,16 +5,24 @@ services:
     container_name: media-organizer
     restart: unless-stopped
     environment:
-      # Uid/gid vus par le NAS : l'export NFS est en all_squash.
+      # Uid/gid sous lesquels tourne le processus : c'est l'identité vue par le NAS
+      # (l'export NFS est en all_squash).
       PUID: "1000"
       PGID: "1000"
-      # Obligatoire : sans lui, les fichiers changent de dossier (UTC au lieu de l'heure locale).
+      # Obligatoire : sans lui, les dates sont en UTC et les fichiers changent de dossier.
       TZ: "Europe/Paris"
+      # Facultatif — tout réglage a un équivalent MO_* (voir le README) :
+      # MO_LOG_LEVEL: "debug"
     volumes:
+      # Configuration, en lecture seule.
       - ./config.toml:/etc/media-organizer/config.toml:ro
+      # Caches persistants (doublons, empreintes, fichiers sans date). Volume distinct.
       - ./state:/var/lib/media-organizer
-      # input et output sous le MÊME export NFS : la zone de transit (sous output)
-      # est alors sur le même système de fichiers, et le commit est un simple rename.
+      # input ET output sous le MÊME export NFS : la zone de transit (sous output) est
+      # alors sur le même système de fichiers et le commit est un simple rename().
+      # Le chemin dans le conteneur doit être celui écrit dans config.toml.
       - /mnt/nas-nextcloud:/mnt/nas-nextcloud
     ports:
+      # /healthz et /livez, limités à la machine (Gatus, healthcheck local…).
       - "127.0.0.1:8080:8080"
+    # Le HEALTHCHECK est déjà défini dans l'image (`media-organizer healthcheck`).

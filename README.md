@@ -89,6 +89,62 @@ version épinglée. Pour migrer, on change le numéro dans le dépôt d'infrastr
 relance le déploiement. Il n'y a **pas de tag `latest`** : une version se désigne toujours
 exactement.
 
+### Exemple de `docker-compose.yml`
+
+Trois fichiers côte à côte sur le Pi : le compose, `config.toml` (copié de
+[config.example.toml](config.example.toml)) et un dossier `state/`.
+
+```yaml
+# Exemple de déploiement. Épinglez toujours une version : il n'existe pas de tag `latest`.
+services:
+  media-organizer:
+    image: ghcr.io/jordanatdown/media-organizer:v1.0.0
+    container_name: media-organizer
+    restart: unless-stopped
+    environment:
+      # Uid/gid sous lesquels tourne le processus : c'est l'identité vue par le NAS
+      # (l'export NFS est en all_squash).
+      PUID: "1000"
+      PGID: "1000"
+      # Obligatoire : sans lui, les dates sont en UTC et les fichiers changent de dossier.
+      TZ: "Europe/Paris"
+      # Facultatif — tout réglage a un équivalent MO_* (voir le README) :
+      # MO_LOG_LEVEL: "debug"
+    volumes:
+      # Configuration, en lecture seule.
+      - ./config.toml:/etc/media-organizer/config.toml:ro
+      # Caches persistants (doublons, empreintes, fichiers sans date). Volume distinct.
+      - ./state:/var/lib/media-organizer
+      # input ET output sous le MÊME export NFS : la zone de transit (sous output) est
+      # alors sur le même système de fichiers et le commit est un simple rename().
+      # Le chemin dans le conteneur doit être celui écrit dans config.toml.
+      - /mnt/nas-nextcloud:/mnt/nas-nextcloud
+    ports:
+      # /healthz et /livez, limités à la machine (Gatus, healthcheck local…).
+      - "127.0.0.1:8080:8080"
+    # Le HEALTHCHECK est déjà défini dans l'image (`media-organizer healthcheck`).
+```
+
+Pas à pas :
+
+1. Adaptez `config.toml` : les chemins `input` et `output` sont ceux **vus depuis le
+   conteneur**, donc ceux du montage NFS (`/mnt/nas-nextcloud/…`), identiques des deux côtés
+   du `-v`.
+2. `PUID` / `PGID` : l'uid et le gid qui ont les droits d'écriture sur l'export NFS. Le
+   dossier `state/` leur est attribué automatiquement ; les volumes média ne sont **jamais**
+   modifiés (pas de `chown` récursif sur le NAS).
+3. Validez, puis essayez en simulation avant le premier vrai passage :
+
+   ```bash
+   docker compose run --rm media-organizer validate-config
+   docker compose run --rm media-organizer --dry-run --once
+   ```
+
+4. Démarrez : `docker compose up -d`. Suivez les logs avec `docker compose logs -f` et l'état
+   avec `curl http://127.0.0.1:8080/healthz`.
+5. Pour changer de version : modifiez le tag dans `image:` puis `docker compose pull &&
+   docker compose up -d`.
+
 Publier une version : [RELEASING.md](RELEASING.md). Contrat complet de déploiement (volumes,
 variables, supervision, première mise en service) : [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
