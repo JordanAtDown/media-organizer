@@ -34,7 +34,7 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Prove the image can be pulled anonymously
         run: |
-          # A GHCR package is born private even from a public repo. Pulling with
+          # A GHCR package can be born private even from a public repo. Pulling with
           # no credentials turns a visibility mistake into a red build here
           # instead of a silent 401 on the Pi.
           docker logout ghcr.io

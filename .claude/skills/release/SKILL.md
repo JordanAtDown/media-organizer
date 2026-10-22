@@ -36,7 +36,7 @@ et *affiche* la commande, il ne la lance pas.
 ## Pièges
 
 - **Pas de tag `latest`.** L'infrastructure épingle une version exacte ; ne pas en ajouter.
-- Un paquet GHCR naît **privé** même depuis un dépôt public. Si l'étape « tirage anonyme »
+- Un paquet GHCR peut naître **privé** même depuis un dépôt public (ce n'est pas arrivé pour `v1.0.0`, mais l'étape de tirage anonyme le vérifie). Si l'étape « tirage anonyme »
   du workflow échoue sur un 401, il faut le passer en *Public* (une seule fois) :
   GitHub → *Packages* → `media-organizer` → *Package settings* → *Change visibility*.
 - Les runners arm64 gratuits exigent un **dépôt public**.

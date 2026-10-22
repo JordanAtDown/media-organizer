@@ -38,12 +38,13 @@ toujours une version exacte, en publier un flottant n'est qu'une surface d'erreu
   gh repo edit JordanAtDown/media-organizer --visibility public
   ```
 
-- **Paquet GHCR public** : un paquet GHCR naît **privé**, même depuis un dépôt public.
-  Après la première publication : GitHub → profil → *Packages* → `media-organizer` →
-  *Package settings* → *Change visibility* → *Public*. Sans cela l'étape
-  « tirage anonyme » du workflow échoue (c'est voulu : mieux vaut un build rouge qu'un `401`
-  silencieux sur le Pi). Le label `org.opencontainers.image.source` de l'image relie déjà
-  le paquet au dépôt.
+- **Paquet GHCR public** : un paquet GHCR peut naître **privé**, même depuis un dépôt
+  public. Pour ce dépôt il a hérité de la visibilité publique dès la première publication
+  (`v1.0.0`), mais ne le supposez pas : l'étape « tirage anonyme » du workflow le vérifie à
+  chaque version. Si elle échoue sur un `401`, passez le paquet en *Public* : GitHub →
+  profil → *Packages* → `media-organizer` → *Package settings* → *Change visibility*.
+  Mieux vaut un build rouge qu'un `401` silencieux sur le Pi. Le label
+  `org.opencontainers.image.source` de l'image relie le paquet au dépôt.
 
 ## Vérifier une version publiée
 

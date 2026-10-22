@@ -59,5 +59,5 @@ cat <<MSG
 
     The release workflow then builds ghcr.io/jordanatdown/media-organizer:v${VERSION}
     on a native arm64 runner and checks that it can be pulled anonymously.
-    First release only: make the GHCR package public (see RELEASING.md).
+    If the anonymous-pull step fails, make the GHCR package public (see RELEASING.md).
 MSG
