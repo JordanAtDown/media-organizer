@@ -81,6 +81,7 @@ le journal de transit).
 
 `GET /healthz` (JSON, **503 si plus aucun progrès** — typiquement un montage NFS figé) et
 `GET /livez` (200 tant que le processus répond). Format et règles :
+[docs/HEALTHZ.md](docs/HEALTHZ.md). Contrat de déploiement :
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Développement
