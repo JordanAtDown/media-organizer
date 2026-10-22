@@ -267,7 +267,7 @@ extensions   = ["jpg", "jpeg", "png", "heic", "mp4", "mov", "avi", "mkv"]
 | `{hour}` | heure sur 2 chiffres (00–23) |
 | `{min}` / `{sec}` | minute / seconde sur 2 chiffres |
 | `{stem}` | nom d'origine sans extension |
-| `{ext}` | extension avec le point (`.jpg`) |
+| `{ext}` | extension avec le point (`.jpg`) ; en minuscules avec `lowercase_ext = true` |
 | `{camera}` | modèle d'appareil EXIF, assaini (ou `unknown`) |
 | `{prefix}` | `photo_prefix` pour une photo, `video_prefix` pour une vidéo |
 
@@ -324,7 +324,7 @@ Priorité : **flag CLI > variable `MO_*` > fichier de config > défaut**.
 | --- | --- | --- |
 | `-c, --config` | `MO_CONFIG` | fichier de configuration |
 | `--state-dir` | `MO_STATE_DIR` | caches persistants |
-| `--log-format text\|json` | `MO_LOG_FORMAT` | l'image impose `json` |
+| `--log-format text\|json` | `MO_LOG_FORMAT` | l'image impose `json` ; `text` est fait pour la lecture humaine : `2026-10-22 20:32:52  INFO message clé=valeur`, sans couleurs hors terminal |
 | `--dry-run` | `MO_DRY_RUN` | planifie sans rien écrire |
 | `--once` | `MO_ONCE` | un seul scan puis sortie |
 | `--poll-interval-secs` | `MO_POLL_INTERVAL_SECS` | |

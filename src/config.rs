@@ -250,6 +250,10 @@ pub struct FolderConfig {
     /// Same when the date came from the **mtime** — an approximation, so off by default.
     #[serde(default)]
     pub write_exif_from_mtime: bool,
+    /// Render `{ext}` in lowercase (`.JPG` → `.jpg`). Off by default: it changes the
+    /// destination name of every newly organized file.
+    #[serde(default)]
+    pub lowercase_ext: bool,
     pub file_mode: Option<Mode>,
     pub dir_mode: Option<Mode>,
 }
@@ -484,6 +488,7 @@ library = "/out"
         assert_eq!(cfg.log_level, "info");
         assert!(f.recursive && f.use_mtime_fallback && f.write_exif_from_filename);
         assert!(!f.write_exif_from_mtime);
+        assert!(!f.lowercase_ext);
         assert_eq!(f.on_conflict, OnConflict::Rename);
         assert!(cfg.dedup.enabled && cfg.dedup.check_existing);
         assert_eq!(cfg.staging.max_batch, 1000);

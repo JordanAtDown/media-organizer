@@ -51,6 +51,7 @@ library = "/out"
 on_conflict = "skip"
 use_mtime_fallback = false
 write_exif_from_mtime = true
+lowercase_ext = true
 extensions = ["jpg", "mp4"]
 "#,
     )
@@ -66,6 +67,7 @@ extensions = ["jpg", "mp4"]
     assert_eq!(f.label(), "phone");
     assert_eq!(f.on_conflict, OnConflict::Skip);
     assert!(!f.use_mtime_fallback && f.write_exif_from_mtime);
+    assert!(f.lowercase_ext);
 }
 
 #[test]

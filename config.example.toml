@@ -173,6 +173,11 @@ write_exif_from_filename = true
 # métadonnées d'une photo est bien plus dur à défaire que de laisser le fichier sans tag.
 write_exif_from_mtime = false
 
+# Rendre {ext} en minuscules (.JPG → .jpg, .MOV → .mov) pour ne pas mélanger les casses
+# dans une même librairie. Désactivé : cela change le nom de destination de tous les
+# fichiers rangés ensuite (les fichiers déjà en place ne sont jamais renommés).
+lowercase_ext = false
+
 # Surcharges des [permissions] globales, pour ce dossier :
 # file_mode = "0666"
 # dir_mode = "0777"

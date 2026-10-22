@@ -73,7 +73,13 @@ pub fn plan_file(candidate: &Candidate, folder: &FolderConfig) -> PlanOutcome {
         .path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| format!(".{e}"))
+        .map(|e| {
+            if folder.lowercase_ext {
+                format!(".{}", e.to_lowercase())
+            } else {
+                format!(".{e}")
+            }
+        })
         .unwrap_or_default();
     let prefix = if video {
         &folder.video_prefix
@@ -150,6 +156,23 @@ mod tests {
             plan.rel_dest,
             PathBuf::from("2025/06/IMG-20250626-WA0002.jpg")
         );
+    }
+
+    #[test]
+    fn extension_case_is_kept_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = candidate(dir.path(), "IMG-20250626-WA0002.JPG");
+        let plan = planned(plan_file(&c, &folder("pattern = \"{stem}{ext}\"")));
+        assert_eq!(plan.rel_dest, PathBuf::from("IMG-20250626-WA0002.JPG"));
+    }
+
+    #[test]
+    fn lowercase_ext_normalizes_only_the_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = candidate(dir.path(), "IMG-20250626-WA0002.JPG");
+        let f = folder("pattern = \"{stem}{ext}\"\nlowercase_ext = true");
+        let plan = planned(plan_file(&c, &f));
+        assert_eq!(plan.rel_dest, PathBuf::from("IMG-20250626-WA0002.jpg"));
     }
 
     #[test]
