@@ -79,7 +79,7 @@ fichier est matérialisé dans la zone de travail privée :
 
 - **5a — placement** (lent, invisible). Pour chaque entrée : création de la chaîne de
   répertoires dans la librairie (avec `dir_mode` sur *chacun*, de la racine de la librairie
-  au parent), puis le fichier est déplacé (`rename`, gratuit sur un même montage) ou **copié**
+  au parent, mais seulement si le mode diffère ; un `chmod` refusé est toléré), puis le fichier est déplacé (`rename`, gratuit sur un même montage) ou **copié**
   (montages différents) à côté de sa destination sous le nom `.<nom>.mo-part`, avec `file_mode`
   déjà appliqué.
 - **5b — publication** (rafale rapide). Une fois *tout* placé, chaque fichier reçoit son vrai

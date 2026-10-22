@@ -4,6 +4,7 @@ use crate::config::Mode;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use tracing::warn;
 
 /// How a file reached the staging area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,14 +31,30 @@ pub fn apply_mode(path: &Path, mode: Option<Mode>) -> io::Result<()> {
 /// all under the process umask; on an `all_squash` NFS export that leaves them
 /// unreadable by the identity Nextcloud serves them with. So the whole chain is
 /// chmod-ed, not just the deepest directory. `dir` must be `output` or below it.
+///
+/// Only directories whose mode differs are touched: `chmod` is reserved to the
+/// owner, and the historical levels of a library belong to other uids.
 pub fn ensure_dir_chain(output: &Path, dir: &Path, mode: Option<Mode>) -> io::Result<()> {
+    ensure_dir_chain_with(output, dir, mode, &|path, Mode(m)| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(m))
+    })
+}
+
+/// [`ensure_dir_chain`] with the `chmod` injected, so a refusal (a directory
+/// owned by someone else) can be simulated without root.
+fn ensure_dir_chain_with(
+    output: &Path,
+    dir: &Path,
+    mode: Option<Mode>,
+    chmod: &dyn Fn(&Path, Mode) -> io::Result<()>,
+) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    if mode.is_none() {
+    let Some(wanted) = mode else {
         return Ok(());
-    }
+    };
     let mut current = dir;
     loop {
-        apply_mode(current, mode)?;
+        open_dir(current, wanted, chmod)?;
         if current == output {
             return Ok(());
         }
@@ -45,6 +62,30 @@ pub fn ensure_dir_chain(output: &Path, dir: &Path, mode: Option<Mode>) -> io::Re
             Some(parent) if parent.starts_with(output) => current = parent,
             _ => return Ok(()),
         }
+    }
+}
+
+/// Bring one directory to `wanted`. A refused `chmod` is tolerated: the
+/// directory is not ours, and in the common case it is already usable.
+fn open_dir(
+    path: &Path,
+    wanted: Mode,
+    chmod: &dyn Fn(&Path, Mode) -> io::Result<()>,
+) -> io::Result<()> {
+    let actual = std::fs::metadata(path)?.permissions().mode() & 0o7777;
+    if actual == wanted.0 {
+        return Ok(());
+    }
+    match chmod(path, wanted) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            warn!(
+                path = %path.display(), actual = format_args!("{actual:04o}"),
+                wanted = format_args!("{:04o}", wanted.0),
+                "cannot chmod directory (not owned by the service); leaving it as is"
+            );
+            Ok(())
+        }
+        other => other,
     }
 }
 
@@ -71,6 +112,7 @@ pub fn copy_file(src: &Path, dst: &Path) -> io::Result<Materialized> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+    use std::path::PathBuf;
 
     fn mode_of(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
@@ -103,6 +145,103 @@ mod tests {
         assert_eq!(mode_of(&leaf), 0o777);
         assert_eq!(mode_of(&out.path().join("2025")), 0o777);
         assert_eq!(mode_of(out.path()), 0o777);
+    }
+
+    /// A `chmod` that records its calls and delegates to the real one.
+    fn recording_chmod(
+        calls: &std::cell::RefCell<Vec<PathBuf>>,
+    ) -> impl Fn(&Path, Mode) -> io::Result<()> + '_ {
+        move |path, Mode(m)| {
+            calls.borrow_mut().push(path.to_path_buf());
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(m))
+        }
+    }
+
+    fn set_mode(p: &Path, m: u32) {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+    }
+
+    #[test]
+    fn dir_chain_skips_chmod_on_directories_already_at_the_mode() {
+        let out = tempfile::tempdir().unwrap();
+        let leaf = out.path().join("2025").join("06");
+        std::fs::create_dir_all(&leaf).unwrap();
+        for d in [out.path(), &out.path().join("2025"), &leaf] {
+            set_mode(d, 0o777);
+        }
+        let calls = std::cell::RefCell::new(Vec::new());
+        ensure_dir_chain_with(
+            out.path(),
+            &leaf,
+            Some(Mode(0o777)),
+            &recording_chmod(&calls),
+        )
+        .unwrap();
+        assert!(
+            calls.borrow().is_empty(),
+            "chmod called on {:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn dir_chain_fixes_only_the_levels_that_differ() {
+        let out = tempfile::tempdir().unwrap();
+        let (year, leaf) = (out.path().join("2025"), out.path().join("2025").join("06"));
+        std::fs::create_dir_all(&leaf).unwrap();
+        set_mode(out.path(), 0o777);
+        set_mode(&year, 0o755);
+        set_mode(&leaf, 0o777);
+        let calls = std::cell::RefCell::new(Vec::new());
+        ensure_dir_chain_with(
+            out.path(),
+            &leaf,
+            Some(Mode(0o777)),
+            &recording_chmod(&calls),
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), vec![year.clone()]);
+        assert_eq!(mode_of(&year), 0o777);
+    }
+
+    #[test]
+    fn dir_chain_chmods_every_new_level() {
+        let out = tempfile::tempdir().unwrap();
+        set_mode(out.path(), 0o777);
+        let leaf = out.path().join("2025").join("06");
+        let calls = std::cell::RefCell::new(Vec::new());
+        ensure_dir_chain_with(
+            out.path(),
+            &leaf,
+            Some(Mode(0o777)),
+            &recording_chmod(&calls),
+        )
+        .unwrap();
+        // The new year and month differ (umask), the already-open root does not.
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(mode_of(&leaf), 0o777);
+        assert_eq!(mode_of(&out.path().join("2025")), 0o777);
+    }
+
+    #[test]
+    fn dir_chain_tolerates_a_refused_chmod() {
+        let out = tempfile::tempdir().unwrap();
+        let leaf = out.path().join("2025").join("06");
+        std::fs::create_dir_all(&leaf).unwrap();
+        set_mode(&leaf, 0o755);
+        let refuse = |_: &Path, _: Mode| Err(io::Error::from_raw_os_error(1)); // EPERM
+        ensure_dir_chain_with(out.path(), &leaf, Some(Mode(0o777)), &refuse).unwrap();
+        assert_eq!(mode_of(&leaf), 0o755);
+    }
+
+    #[test]
+    fn dir_chain_still_fails_on_other_chmod_errors() {
+        let out = tempfile::tempdir().unwrap();
+        set_mode(out.path(), 0o755);
+        let broken = |_: &Path, _: Mode| Err(io::Error::from_raw_os_error(5)); // EIO
+        let err =
+            ensure_dir_chain_with(out.path(), out.path(), Some(Mode(0o777)), &broken).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(5));
     }
 
     #[test]

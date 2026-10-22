@@ -58,6 +58,20 @@ input (la source est supprimée après publication).
 
 ## Réseau et supervision
 
+**Modes des dossiers (`dir_mode`).** Un `chmod` n'est permis qu'au propriétaire, même quand
+le mode demandé est déjà le mode actuel. Or les dossiers historiques d'une librairie
+appartiennent souvent à d'autres uid ; seuls ceux que le service crée lui-même sont à lui.
+Pour chaque niveau, de la destination jusqu'à la racine de la librairie, le service :
+
+- **ne touche à rien** si le mode actuel est déjà le mode configuré ;
+- applique `chmod` si le mode diffère ;
+- **tolère un refus** (`EPERM`) : il journalise un `warn` (chemin, mode actuel, mode voulu)
+  et poursuit, le dossier restant utilisable dans le cas courant. Toute autre erreur fait
+  échouer le fichier, qui est retenté au scan suivant.
+
+Un `warn` répété sur le même dossier signale un mode réellement insuffisant (ex. un dossier
+en `0755` d'un autre uid) : corrigez-le côté NAS, le service ne le pourra pas.
+
 Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
 
 - Probe de supervision (ex. Gatus) : `GET http://<hôte>:8080/healthz`, condition sur le
