@@ -8,4 +8,5 @@ pub mod fsops;
 pub mod metadata;
 pub mod naming;
 pub mod plan;
+pub mod resolve;
 pub mod state;
