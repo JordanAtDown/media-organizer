@@ -15,11 +15,13 @@ dépôt d'infrastructure. Ce dépôt-ci ne déploie rien lui-même.
 
 | Variable | Obligatoire | Rôle |
 | --- | --- | --- |
-| `TZ` | **oui** | fuseau horaire. Sans lui les dates sont en UTC et les fichiers changent de dossier au passage de mois. Le fuseau détecté est journalisé au démarrage (`timezone_offset`) |
+| `TZ` | **oui** | fuseau horaire. Sans lui les dates sont en UTC et les fichiers changent de dossier au passage de mois. Le fuseau détecté est journalisé au démarrage (`timezone_offset`). Les horodatages des logs suivent le même fuseau (`2026-10-22 20:25:42`, heure locale, JSON comme texte) ; sans `TZ` ils sont en UTC |
 | `PUID` / `PGID` | recommandé (défaut 1000) | uid/gid sous lesquels le processus tourne : **c'est l'identité vue par le NAS** |
 | `MO_CONFIG` | non | défaut `/etc/media-organizer/config.toml` |
 | `MO_STATE_DIR` | non | défaut `/var/lib/media-organizer` |
 | `MO_LOG_FORMAT`, `MO_LOG_LEVEL`, `MO_DRY_RUN`, `MO_ONCE`, `MO_POLL_INTERVAL_SECS`, `MO_WORKERS`, `MO_HEALTH_BIND` | non | voir le [README](../README.md) |
+
+Chaque ligne JSON est **à plat** : `{"timestamp":"2026-10-22 20:25:42","level":"ERROR","message":"commit failed; will retry","path":"/inputs/jordan/IMG_2894.JPG","error":"…"}` (`message` et les propriétés au premier niveau, pas de `fields.` ni de `target`).
 
 ## Volumes
 
@@ -56,8 +58,6 @@ média (ce serait une réécriture récursive de tout le NAS via NFS). Les uid/g
 doivent avoir les droits d'écriture sur chaque librairie et d'écriture/suppression sur chaque
 input (la source est supprimée après publication).
 
-## Réseau et supervision
-
 **Modes des dossiers (`dir_mode`).** Un `chmod` n'est permis qu'au propriétaire, même quand
 le mode demandé est déjà le mode actuel. Or les dossiers historiques d'une librairie
 appartiennent souvent à d'autres uid ; seuls ceux que le service crée lui-même sont à lui.
@@ -71,6 +71,8 @@ Pour chaque niveau, de la destination jusqu'à la racine de la librairie, le ser
 
 Un `warn` répété sur le même dossier signale un mode réellement insuffisant (ex. un dossier
 en `0755` d'un autre uid) : corrigez-le côté NAS, le service ne le pourra pas.
+
+## Réseau et supervision
 
 Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
 

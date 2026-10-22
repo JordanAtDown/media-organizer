@@ -238,7 +238,8 @@ inconnue est refusée. Points à connaître :
 
 - **`file_mode` / `dir_mode`** sont des *chaînes octales* (`"0777"`), pas des entiers.
 - **`TZ` est obligatoire** dans le conteneur : sans lui, les fichiers changent de dossier
-  (UTC au lieu de l'heure locale). Le fuseau détecté est journalisé au démarrage.
+  (UTC au lieu de l'heure locale). Le fuseau détecté est journalisé au démarrage, et les
+  horodatages des logs l'utilisent aussi (`2026-10-22 20:25:42`, heure locale ; le décalage est dans `timezone_offset` au démarrage).
 - La **zone de travail** est privée au service (`<state_dir>/work`) : inutile de la monter.
 - Chaque `[[folders]]` a un nom **unique** (par défaut, celui de l'input) : c'est aussi le nom
   de son sous-dossier de travail.
@@ -255,6 +256,7 @@ photo_prefix = "IMG_"        # optionnel, défaut : ""
 video_prefix = "VID_"        # optionnel, défaut : ""
 on_conflict  = "rename"      # rename | skip | overwrite
 extensions   = ["jpg", "jpeg", "png", "heic", "mp4", "mov", "avi", "mkv"]
+lowercase_ext = false        # optionnel : true rend {ext} en minuscules (.JPG → .jpg)
 ```
 
 ### Jetons du motif

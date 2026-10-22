@@ -5,9 +5,11 @@ use media_organizer::cli::{Cli, Command, LogFormat};
 use media_organizer::config::Config;
 use media_organizer::daemon;
 use media_organizer::health::{client, HealthServer, HealthState};
+use media_organizer::logtime::LocalTime;
 use media_organizer::scanner::Scanner;
 use media_organizer::shutdown::Shutdown;
 use media_organizer::staging::Staging;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,10 +22,17 @@ fn init_logging(cli: &Cli, config: Option<&Config>) {
         .unwrap_or_else(|_| EnvFilter::new(cli.effective_log_level(config)));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_timer(LocalTime)
         .with_writer(std::io::stdout);
     match cli.log_format {
-        LogFormat::Json => builder.json().init(),
-        LogFormat::Text => builder.init(),
+        // Flat: `message` and the event's properties sit next to `level`, instead of
+        // under a nested `fields` object, and the module path is left out.
+        LogFormat::Json => builder.json().flatten_event(true).with_target(false).init(),
+        // Escape codes only on a terminal: `docker logs` would show them raw.
+        LogFormat::Text => builder
+            .with_target(false)
+            .with_ansi(std::io::stdout().is_terminal())
+            .init(),
     }
 }
 

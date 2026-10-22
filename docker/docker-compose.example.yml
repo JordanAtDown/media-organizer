@@ -19,6 +19,9 @@ services:
       TZ: "Europe/Paris"
       # Facultatif — tout réglage a un équivalent MO_* (voir le README) :
       # MO_LOG_LEVEL: "debug"
+      # L'image journalise en JSON (une ligne par événement, à plat). Pour lire les logs à la
+      # main : une ligne lisible par événement, sans couleurs hors terminal.
+      # MO_LOG_FORMAT: "text"
     volumes:
       # Configuration, en lecture seule.
       - ./config.toml:/etc/media-organizer/config.toml:ro
