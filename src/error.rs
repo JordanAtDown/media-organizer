@@ -1,0 +1,72 @@
+use std::path::PathBuf;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse config file: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("invalid configuration: {0}")]
+    Invalid(String),
+}
+
+#[derive(Debug, Error)]
+pub enum ExifError {
+    #[error("failed to read file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse metadata: {0}")]
+    Parse(String),
+    #[error("no capture date found in metadata")]
+    NoDate,
+}
+
+#[derive(Debug, Error)]
+pub enum NamingError {
+    #[error("invalid pattern token: {0}")]
+    InvalidToken(String),
+    #[error("invalid pattern: {0}")]
+    InvalidPattern(String),
+}
+
+#[derive(Debug, Error)]
+pub enum DedupError {
+    #[error("failed to hash {path}: {source}")]
+    Hash {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("state file error: {0}")]
+    State(String),
+}
+
+#[derive(Debug, Error)]
+pub enum StagingError {
+    #[error("io error on {path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("staging dir {staging} is not on the same filesystem as output {output}")]
+    CrossDevice { staging: PathBuf, output: PathBuf },
+    #[error("journal error: {0}")]
+    Journal(String),
+}
+
+#[derive(Debug, Error)]
+pub enum ScanError {
+    #[error("failed to walk {path}: {message}")]
+    Walk { path: PathBuf, message: String },
+    #[error(transparent)]
+    Staging(#[from] StagingError),
+    #[error(transparent)]
+    Dedup(#[from] DedupError),
+}
+
+#[derive(Debug, Error)]
+pub enum HealthError {
+    #[error("failed to bind health endpoint on {addr}: {message}")]
+    Bind { addr: String, message: String },
+    #[error("health probe failed: {0}")]
+    Probe(String),
+}
