@@ -18,9 +18,9 @@ docker build -t media-organizer:test .
 scripts/smoke-test.sh media-organizer:test
 ```
 
-Le smoke test vérifie : `--dry-run` n'écrit rien ; le rangement par EXIF/nom/mtime ; le
+Le smoke test monte l'input et la librairie **séparément** (comme un vrai compose), donc exerce la copie entre montages. Il vérifie : `--dry-run` n'écrit rien ; le rangement par EXIF/nom/mtime ; le
 `warn` du repli mtime ; `@eaDir` élagué ; modes `666`/`777` sur le fichier **et** chaque
-répertoire ; EXIF injecté sans réécrire la source ; transit vide ; doublon laissé en place
+répertoire ; EXIF injecté sans réécrire la source ; zone de travail vidée et aucun `.mo-part` laissé dans la librairie ; doublon laissé en place
 et mémorisé sans `_1` ; `/healthz` ok et `/livez` 200 ; `docker stop` en ≤ 3 s avec **code
 de sortie 0** (un `143` signifierait un SIGTERM non géré).
 

@@ -39,17 +39,22 @@ dir_mode  = "0777"
 [health]
 startup_grace_secs = 30
 [[folders]]
-input  = "/data/in"
-output = "/data/out"
+input   = "in"        # → /inputs/in
+library = "photos"    # → /libraries/photos
 TOML
 
 run() {  # run <extra docker args...> -- <app args...>
     docker run --rm "${PLATFORM[@]}" \
         -e PUID="$(id -u)" -e PGID="$(id -g)" -e TZ=UTC \
         -v "$WORK/config.toml:/etc/media-organizer/config.toml:ro" \
-        -v "$WORK:/data" -v "$STATE:/var/lib/media-organizer" \
+        -v "$IN:/inputs/in" -v "$OUT:/libraries/photos" \
+        -v "$STATE:/var/lib/media-organizer" \
         "$IMAGE" "$@"
 }
+
+# Each folder is mounted on its own, like in a real compose file: the library and the
+# input are different mounts, so nothing can be hard-linked between them and the
+# files really are copied across — the case this smoke test exists to prove.
 
 # 1 ── dry-run writes nothing ──────────────────────────────────────────────────
 run --dry-run --once --health-bind "" >/dev/null 2>&1
@@ -83,9 +88,11 @@ grep -aq '2025:06:26 12:00:00' "$OUT/2025/06/2025-06-26_120000_IMG-20250626-WA00
     || fail "DateTimeOriginal was not injected"
 ok "EXIF date injected from the file name"
 
-[[ -z "$(ls -A "$OUT/.media-organizer/staging")" ]] || fail "staging not empty after a clean scan"
+[[ -z "$(ls -A "$STATE/work/in")" ]] || fail "work area not empty after a clean scan"
+[[ -z "$(find "$OUT" -name '*.mo-part')" ]] || fail "temporary files left in the library"
+[[ ! -e "$OUT/.media-organizer" ]] || fail "the library was polluted with a work directory"
 [[ -z "$(find "$IN" -maxdepth 1 -type f)" ]] || fail "sources left behind: $(ls "$IN")"
-ok "staging empty, sources consumed"
+ok "work area empty, nothing left in the library, sources consumed"
 
 # 3 ── a copy of an organized file is a duplicate: left alone, remembered ─────
 cp "$OUT/2025/06/2025-06-26_120000_IMG-20250626-WA0002.jpg" "$IN/IMG-20250626-WA0002.jpg"
@@ -99,7 +106,8 @@ ok "duplicate left in place, remembered, no _1"
 docker run -d --name "$NAME" "${PLATFORM[@]}" \
     -e PUID="$(id -u)" -e PGID="$(id -g)" -e TZ=UTC -p 127.0.0.1:0:8080 \
     -v "$WORK/config.toml:/etc/media-organizer/config.toml:ro" \
-    -v "$WORK:/data" -v "$STATE:/var/lib/media-organizer" "$IMAGE" >/dev/null
+    -v "$IN:/inputs/in" -v "$OUT:/libraries/photos" \
+    -v "$STATE:/var/lib/media-organizer" "$IMAGE" >/dev/null
 for _ in $(seq 1 30); do
     docker exec "$NAME" media-organizer healthcheck >/dev/null 2>&1 && break
     sleep 1
