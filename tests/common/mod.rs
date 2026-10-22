@@ -31,14 +31,19 @@ impl Env {
     /// `top` is appended before `[[folders]]` (global keys and tables),
     /// `folder` inside the single folder entry.
     pub fn config(&self, top: &str, folder: &str) -> Config {
-        // A default pattern, unless the test brings its own.
+        // A default pattern and label, unless the test brings its own.
         let pattern = if folder.contains("pattern") {
             ""
         } else {
             "pattern = \"{year}/{month}/{stem}{ext}\"\n"
         };
+        let name = if folder.contains("name") {
+            ""
+        } else {
+            "name = \"t\"\n"
+        };
         config::parse(&format!(
-            "stability_secs = 0\n{top}\n[[folders]]\ninput = \"{}\"\noutput = \"{}\"\n{pattern}{folder}\n",
+            "stability_secs = 0\n{top}\n[[folders]]\ninput = \"{}\"\nlibrary = \"{}\"\n{name}{pattern}{folder}\n",
             self.input.path().display(),
             self.output.path().display(),
         ))
@@ -66,6 +71,11 @@ impl Env {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    /// The folder's private work area (staging and journal) — default location.
+    pub fn work_dir(&self) -> PathBuf {
+        self.state.path().join("work").join("t")
     }
 
     pub fn out(&self, rel: &str) -> PathBuf {

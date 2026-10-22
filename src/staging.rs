@@ -25,7 +25,6 @@ use crate::resolve::Resolved;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
@@ -97,7 +96,8 @@ pub struct Staging {
 }
 
 impl Staging {
-    /// Create the staging directory and verify it shares `output`'s filesystem.
+    /// Create the staging directory. It may live on any filesystem: publication
+    /// moves a file next to its destination first, copying when mounts differ.
     pub fn new(
         dir: PathBuf,
         output: PathBuf,
@@ -111,14 +111,6 @@ impl Staging {
         std::fs::create_dir_all(&dir).map_err(io(&dir))?;
         std::fs::create_dir_all(&output).map_err(io(&output))?;
 
-        let staging_dev = std::fs::metadata(&dir).map_err(io(&dir))?.dev();
-        let output_dev = std::fs::metadata(&output).map_err(io(&output))?.dev();
-        if staging_dev != output_dev {
-            return Err(StagingError::CrossDevice {
-                staging: dir,
-                output,
-            });
-        }
         Ok(Self {
             dir,
             output,
@@ -473,7 +465,7 @@ mod tests {
     use crate::date_reader::CaptureInfo;
     use crate::plan::FilePlan;
     use chrono::{Local, TimeZone};
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     const MIN_JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xD9];
 
@@ -540,24 +532,6 @@ mod tests {
         let f = Fixture::new();
         let s = f.staging(None, None);
         assert!(s.dir().is_dir());
-    }
-
-    #[test]
-    fn staging_on_another_filesystem_is_refused() {
-        let output = tempfile::tempdir().unwrap();
-        let err = Staging::new(
-            PathBuf::from("/dev/shm/mo-test-staging"),
-            output.path().to_path_buf(),
-            None,
-            None,
-        );
-        // /dev/shm is tmpfs on Linux; if the temp dir shares it the check cannot fail.
-        if std::fs::metadata("/dev/shm").map(|m| m.dev()).ok()
-            != std::fs::metadata(output.path()).map(|m| m.dev()).ok()
-        {
-            assert!(matches!(err, Err(StagingError::CrossDevice { .. })));
-        }
-        let _ = std::fs::remove_dir("/dev/shm/mo-test-staging");
     }
 
     #[test]
@@ -945,5 +919,44 @@ mod tests {
         let report = s.commit(vec![e.clone()]).unwrap();
         assert_eq!(report.failed.len(), 1);
         assert!(!temp_path(&e.final_dest).exists());
+    }
+
+    #[test]
+    fn a_work_area_on_another_filesystem_is_published_by_copy() {
+        // /dev/shm is a different filesystem from a regular temp dir, so the
+        // staged file cannot be renamed next to its destination: it is copied.
+        let f = Fixture::new();
+        let shm = Path::new("/dev/shm");
+        let different = std::fs::metadata(shm).map(|m| m.dev()).ok()
+            != std::fs::metadata(f.output.path()).map(|m| m.dev()).ok();
+        if !different || !shm.is_dir() {
+            return; // single-filesystem sandbox: the scenario cannot occur here
+        }
+        let work = shm.join(format!("mo-test-{}", std::process::id()));
+        let s = Staging::new(
+            work.clone(),
+            f.output.path().to_path_buf(),
+            Some(Mode(0o666)),
+            None,
+        )
+        .unwrap();
+        let item = f.resolved("a.jpg", b"across mounts", "2025/a.jpg", false);
+        let entries = s.prepare(vec![item]).prepared;
+        s.write_journal(&entries).unwrap();
+
+        let report = s.commit(entries).unwrap();
+
+        assert_eq!(report.committed.len(), 1, "{:?}", report.failed);
+        assert_eq!(
+            std::fs::read(f.output.path().join("2025/a.jpg")).unwrap(),
+            b"across mounts"
+        );
+        assert_eq!(
+            std::fs::read_dir(&work).unwrap().count(),
+            0,
+            "work area emptied"
+        );
+        assert!(!f.input.path().join("a.jpg").exists());
+        let _ = std::fs::remove_dir_all(work);
     }
 }

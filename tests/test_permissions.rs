@@ -105,8 +105,8 @@ fn modes_are_applied_on_replay_after_a_crash_too() {
     );
     let folder = &cfg.folders[0];
     let staging = Staging::new(
-        folder.staging_dir(&cfg.staging),
-        folder.output.clone(),
+        folder.work_subdir(&cfg.work_root(env.state.path())),
+        folder.library.clone(),
         folder.file_mode(&cfg.permissions),
         folder.dir_mode(&cfg.permissions),
     )

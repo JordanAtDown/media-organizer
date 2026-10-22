@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 fn staging_dir(env: &Env) -> PathBuf {
-    env.output.path().join(".media-organizer/staging")
+    env.work_dir()
 }
 
 /// Run phases 2-4 by hand and write the journal — then "crash": return before
@@ -22,8 +22,8 @@ fn staging_dir(env: &Env) -> PathBuf {
 fn crash_before_commit(env: &Env, cfg: &Config) -> usize {
     let folder = &cfg.folders[0];
     let staging = Staging::new(
-        folder.staging_dir(&cfg.staging),
-        folder.output.clone(),
+        folder.work_subdir(&cfg.work_root(env.state.path())),
+        folder.library.clone(),
         folder.file_mode(&cfg.permissions),
         folder.dir_mode(&cfg.permissions),
     )
@@ -48,7 +48,7 @@ fn crash_before_commit(env: &Env, cfg: &Config) -> usize {
     let mut digester = Digester::new(HashIndex::load(env.state.path()));
     let resolved = resolve(
         plans,
-        &folder.output,
+        &folder.library,
         folder.on_conflict,
         &cfg.dedup,
         &mut digester,
@@ -214,7 +214,7 @@ fn the_recover_subcommand_finishes_an_interrupted_batch() {
     std::fs::write(
         &cfg_file,
         format!(
-            "[[folders]]\ninput = \"{}\"\noutput = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n",
+            "[[folders]]\nname = \"t\"\ninput = \"{}\"\nlibrary = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n",
             env.input.path().display(),
             env.output.path().display()
         ),
@@ -225,6 +225,8 @@ fn the_recover_subcommand_finishes_an_interrupted_batch() {
         .args([
             "--config",
             cfg_file.to_str().unwrap(),
+            "--state-dir",
+            env.state.path().to_str().unwrap(),
             "--health-bind",
             "",
             "recover",

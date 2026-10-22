@@ -31,7 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 
-/// Directory under `output` that holds the staging area; never scanned.
+/// Name of a directory never scanned, wherever it appears in an input.
 pub const WORK_DIR: &str = ".media-organizer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -113,6 +113,7 @@ pub struct ScanSummary {
 
 pub struct Scanner {
     config: Config,
+    work_root: PathBuf,
     dry_run: bool,
     state_dir: PathBuf,
     pool: rayon::ThreadPool,
@@ -135,8 +136,10 @@ impl Scanner {
         );
         let duplicates = DuplicateCache::load(&state_dir);
         let digester = Digester::new(HashIndex::load(&state_dir));
+        let work_root = config.work_root(&state_dir);
         Ok(Self {
             config,
+            work_root,
             dry_run,
             state_dir,
             pool,
@@ -217,8 +220,8 @@ impl Scanner {
             None
         } else {
             match Staging::new(
-                folder.staging_dir(&self.config.staging),
-                folder.output.clone(),
+                folder.work_subdir(&self.work_root),
+                folder.library.clone(),
                 folder.file_mode(&self.config.permissions),
                 folder.dir_mode(&self.config.permissions),
             ) {
@@ -269,7 +272,7 @@ impl Scanner {
             failed,
         } = resolve(
             plans,
-            &folder.output,
+            &folder.library,
             folder.on_conflict,
             &self.config.dedup,
             &mut self.digester,
@@ -399,7 +402,8 @@ impl Scanner {
     /// descending into them: on an NFS-mounted DSM volume `@eaDir` holds a
     /// thumbnail per photo, and walking it just to discard it is a round-trip each.
     fn inventory(&self, folder: &FolderConfig, observer: &dyn Observer) -> Vec<Candidate> {
-        let staging_dir = folder.staging_dir(&self.config.staging);
+        let work_dir = folder.work_subdir(&self.work_root);
+        let work_root = &self.work_root;
         let max_depth = if folder.recursive { usize::MAX } else { 1 };
         let now = unix_now();
         let stability = self.config.stability_secs;
@@ -414,7 +418,8 @@ impl Scanner {
                 }
                 let name = e.file_name().to_string_lossy();
                 name != WORK_DIR
-                    && e.path() != staging_dir
+                    && e.path() != work_dir
+                    && e.path() != work_root
                     && !folder.excluded_dirs.iter().any(|d| d.as_str() == name)
             });
 
@@ -573,7 +578,7 @@ mod tests {
 
         fn scanner(&self, extra: &str, dry_run: bool) -> Scanner {
             let cfg = config::parse(&format!(
-                "stability_secs = 0\nworkers = 2\n{extra}\n[[folders]]\ninput = \"{}\"\noutput = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n",
+                "stability_secs = 0\nworkers = 2\n{extra}\n[[folders]]\ninput = \"{}\"\nlibrary = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n",
                 self.input.path().display(),
                 self.output.path().display(),
             ))
@@ -734,8 +739,8 @@ mod tests {
 
         // Simulate a crash after phase 4: prepared + journaled, never committed.
         let staging = Staging::new(
-            folder.staging_dir(&s.config.staging),
-            folder.output.clone(),
+            folder.work_subdir(&s.work_root),
+            folder.library.clone(),
             None,
             None,
         )
@@ -745,7 +750,7 @@ mod tests {
         let plans = s.plan(cand, &folder, &NoObserver, &mut sum);
         let r = resolve(
             plans,
-            &folder.output,
+            &folder.library,
             folder.on_conflict,
             &s.config.dedup,
             &mut s.digester,

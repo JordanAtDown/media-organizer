@@ -125,7 +125,7 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         write!(
             f,
-            "{extra}\n[[folders]]\ninput = \"/in\"\noutput = \"/out\"\n"
+            "{extra}\n[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\n"
         )
         .unwrap();
         f

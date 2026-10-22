@@ -49,8 +49,6 @@ pub enum StagingError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("staging dir {staging} is not on the same filesystem as output {output}")]
-    CrossDevice { staging: PathBuf, output: PathBuf },
     #[error("journal error: {0}")]
     Journal(String),
 }

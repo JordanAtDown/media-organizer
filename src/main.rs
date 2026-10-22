@@ -40,7 +40,7 @@ fn main() -> Result<ExitCode> {
 
     let settings = settings.with_context(|| format!("loading {}", cli.config.display()))?;
     match cli.command {
-        Some(Command::Recover) => recover(&settings.config),
+        Some(Command::Recover) => recover(&settings.config, &settings.state_dir),
         _ => run_daemon(&cli, settings),
     }
 }
@@ -74,11 +74,12 @@ fn healthcheck(
     Ok(ExitCode::SUCCESS)
 }
 
-fn recover(config: &Config) -> Result<ExitCode> {
+fn recover(config: &Config, state_dir: &std::path::Path) -> Result<ExitCode> {
+    let work_root = config.work_root(state_dir);
     for folder in &config.folders {
         let staging = Staging::new(
-            folder.staging_dir(&config.staging),
-            folder.output.clone(),
+            folder.work_subdir(&work_root),
+            folder.library.clone(),
             folder.file_mode(&config.permissions),
             folder.dir_mode(&config.permissions),
         )?;

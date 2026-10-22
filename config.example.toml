@@ -19,9 +19,27 @@ workers = 8
 # 0 désactive.
 stability_secs = 10
 
+# ── Les trois catégories de dossiers ──────────────────────────────────────────────
+#   inputs     les dossiers SOURCES (synchronisation) — un volume par dossier
+#   libraries  les dossiers qui ACCUEILLENT les librairies (destination finale)
+#   work       la zone de travail du service (transit, journal) — interne
+#
+# Dans le compose, chaque input et chaque library est monté séparément :
+#     - /mnt/nas/…/synchronisation:/inputs/jordan
+#     - /mnt/nas/…/phototeque:/libraries/jordan
+# et la config les relie par leur NOM (voir [[folders]]), sans réécrire de chemin.
+# Un nom sans « / » est cherché sous ces racines ; un chemin absolu reste possible.
+inputs_root = "/inputs"
+libraries_root = "/libraries"
+
 # Dossier des caches persistants. Surchargé par --state-dir / MO_STATE_DIR.
 # À monter comme un volume distinct de la configuration (qui est en lecture seule).
 # state_dir = "/var/lib/media-organizer"
+
+# Zone de travail privée : transit des fichiers en cours de traitement et journal de
+# reprise, un sous-dossier par [[folders]]. Par défaut <state_dir>/work : elle n'a PAS
+# besoin d'être montée. Ne la montez à part que pour déboguer.
+# work_dir = "/work"
 
 # error | warn | info | debug | trace (défaut : "info").
 # Priorité (la plus haute d'abord) : variable RUST_LOG → flag --log-level / -v (ou
@@ -32,8 +50,8 @@ log_level = "info"
 # ── Permissions ───────────────────────────────────────────────────────────────────
 # POURQUOI : l'export NFS est en all_squash. Un fichier ou un dossier créé avec le umask
 # du processus peut devenir illisible pour l'identité sous laquelle Nextcloud le sert,
-# qui répond alors 403. Le mode s'applique au fichier ET à chaque dossier de `output`
-# jusqu'à son parent.
+# qui répond alors 403. Le mode s'applique au fichier ET à chaque dossier de la
+# librairie, de sa racine jusqu'au parent du fichier.
 #
 # Ce sont des chaînes OCTALES : TOML n'a pas de littéral octal, donc `file_mode = 777`
 # serait lu en décimal et signifierait tout autre chose (refusé à la validation).
@@ -42,16 +60,13 @@ log_level = "info"
 file_mode = "0666"
 dir_mode = "0777"
 
-# ── Zone de transit ───────────────────────────────────────────────────────────────
-# Tout le travail se fait ici ; `output` n'est touché qu'à la toute fin, par une rafale
-# de rename().
+# ── Traitement par lot ────────────────────────────────────────────────────────────
+# Tout le travail (dates, EXIF, doublons) se fait dans la zone de travail privée ; la
+# librairie n'est touchée qu'à la fin : chaque fichier y est copié sous un nom temporaire
+# caché (.nom.mo-part, que les scanners de librairie comme Immich n'indexent pas) puis
+# rendu visible d'un coup par un renommage atomique.
 [staging]
-# Par défaut : <output>/.media-organizer/staging.
-# DOIT être sur le même système de fichiers que `output` (vérifié par `validate-config`, puis à chaque scan), sinon
-# le rename final redevient une copie et la propriété recherchée disparaît.
-# dir = "/mnt/nas-nextcloud/.media-organizer/staging"
-
-# Borne la durée de la rafale finale sur un premier passage massif (0 = illimité).
+# Borne la durée d'un lot sur un premier passage massif (0 = illimité).
 # Le reste attend le scan suivant.
 max_batch = 1000
 
@@ -85,15 +100,17 @@ startup_grace_secs = 120
 stale_intervals = 3
 
 # ── Dossiers ──────────────────────────────────────────────────────────────────────
-# Un [[folders]] par paire entrée/sortie. `output` ne doit pas être DANS un `input`
-# récursif (le scan se nourrirait de sa propre sortie).
+# Un [[folders]] par paire source → librairie. `input` et `library` sont des NOMS
+# (résolus sous inputs_root / libraries_root) ou des chemins absolus. La librairie ne
+# doit pas être DANS un `input` récursif (le scan se nourrirait de sa propre sortie).
 # Un `input` absent n'est pas fatal : NFS peut monter après le conteneur. Il est
 # signalé `degraded` dans /healthz.
 [[folders]]
-# Libellé dans les logs et /healthz (défaut : le chemin d'entrée).
-name = "telephone"
-input = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/synchronisation"
-output = "/mnt/nas-nextcloud/utilisateur@exemple.org/files/photos/phototeque"
+# Libellé dans les logs et /healthz, et nom du sous-dossier de travail : doit être
+# unique (défaut : le nom de l'input).
+name = "jordan"
+input = "jordan"          # → /inputs/jordan
+library = "jordan"        # → /libraries/jordan
 
 # Jetons du motif :
 #   {year}    — année sur 4 chiffres (2024)
@@ -161,13 +178,19 @@ write_exif_from_mtime = false
 # dir_mode = "0777"
 
 
-# ── Second dossier (exemple) ──────────────────────────────────────────────────────
-# Autant de blocs [[folders]] que de paires entrée/sortie. Ici, un dossier de
-# synchronisation d'un autre utilisateur, rangé avec une politique plus prudente.
+# ── Autres dossiers (exemples) ────────────────────────────────────────────────────
+# Autant de blocs [[folders]] que de sources. Un second utilisateur Nextcloud :
 # [[folders]]
-# name = "synchro-jordan"
-# input = "/mnt/nas-nextcloud/jordan@exemple.org/files/synchronisation"
-# output = "/mnt/nas-nextcloud/jordan@exemple.org/files/photos/phototeque"
-# recursive = true
-# on_conflict = "skip"
-# extensions = ["jpg", "jpeg", "heic", "png", "mp4", "mov"]
+# name = "sylvie"
+# input = "sylvie"
+# library = "sylvie"
+#
+# Un boîtier photo en RAW, avec un motif et des préfixes à lui :
+# [[folders]]
+# name = "sony"
+# input = "sony"
+# library = "sony"
+# pattern = "{year}/{month}/{prefix}_{year}_{month}_{day}-{hour}_{min}_{sec}{ext}"
+# photo_prefix = "photo"
+# video_prefix = "video"
+# extensions = ["arw"]

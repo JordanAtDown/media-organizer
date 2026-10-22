@@ -12,7 +12,7 @@ fn load(toml: &str) -> Result<config::Config, ConfigError> {
     config::load(f.path())
 }
 
-const FOLDER: &str = "[[folders]]\ninput = \"/in\"\noutput = \"/out\"\n";
+const FOLDER: &str = "[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\n";
 
 #[test]
 fn a_full_config_loads_every_section() {
@@ -47,7 +47,7 @@ stale_intervals = 5
 [[folders]]
 name = "phone"
 input = "/in"
-output = "/out"
+library = "/out"
 on_conflict = "skip"
 use_mtime_fallback = false
 write_exif_from_mtime = true
@@ -99,21 +99,9 @@ fn an_integer_mode_is_rejected_because_toml_would_read_it_as_decimal() {
 
 #[test]
 fn output_inside_a_recursive_input_is_rejected() {
-    let toml = "[[folders]]\ninput = \"/data\"\noutput = \"/data/sorted\"";
+    let toml = "[[folders]]\ninput = \"/data\"\nlibrary = \"/data/sorted\"";
     assert!(load(toml).is_err());
     assert!(load(&format!("{toml}\nrecursive = false")).is_ok());
-}
-
-#[test]
-fn staging_on_another_filesystem_than_output_is_rejected() {
-    let out = tempfile::tempdir().unwrap();
-    // /proc is never on the same device as a regular temporary directory.
-    let toml = format!(
-        "[staging]\ndir = \"/proc/staging\"\n[[folders]]\ninput = \"/in\"\noutput = \"{}\"",
-        out.path().display()
-    );
-    let msg = load(&toml).unwrap_err().to_string();
-    assert!(msg.contains("same filesystem"), "{msg}");
 }
 
 #[test]
@@ -131,7 +119,7 @@ fn a_typo_in_any_section_fails_loudly() {
 #[test]
 fn a_missing_input_folder_is_not_a_config_error() {
     // NFS may mount after the container starts; this must not crash-loop.
-    assert!(load("[[folders]]\ninput = \"/not/mounted/yet\"\noutput = \"/out\"").is_ok());
+    assert!(load("[[folders]]\ninput = \"/not/mounted/yet\"\nlibrary = \"/out\"").is_ok());
 }
 
 #[test]
@@ -164,4 +152,21 @@ fn the_shipped_example_config_is_valid_and_documents_every_default() {
         f.write_exif_from_mtime,
         defaults.folders[0].write_exif_from_mtime
     );
+}
+
+#[test]
+fn the_example_links_inputs_to_libraries_by_name() {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.toml");
+    let cfg = config::load(&example).unwrap();
+    let f = &cfg.folders[0];
+    assert_eq!(f.input, std::path::PathBuf::from("/inputs/jordan"));
+    assert_eq!(f.library, std::path::PathBuf::from("/libraries/jordan"));
+    let root = cfg.work_root(std::path::Path::new("/var/lib/media-organizer"));
+    assert_eq!(f.work_subdir(&root), root.join("jordan"));
+}
+
+#[test]
+fn the_work_area_never_needs_to_be_configured() {
+    let cfg = load(FOLDER).unwrap();
+    assert!(cfg.work_dir.is_none());
 }

@@ -3,8 +3,7 @@ use crate::naming;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use std::net::SocketAddr;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// A Unix permission mode, written in the config as an **octal string**.
 ///
@@ -99,6 +98,14 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_inputs_root() -> PathBuf {
+    PathBuf::from("/inputs")
+}
+
+fn default_libraries_root() -> PathBuf {
+    PathBuf::from("/libraries")
+}
+
 fn default_max_batch() -> usize {
     1000
 }
@@ -121,16 +128,13 @@ fn default_stale_intervals() -> u64 {
 pub struct Permissions {
     /// Mode applied to each organized file. Omit to leave it untouched.
     pub file_mode: Option<Mode>,
-    /// Mode applied to every directory from `output` down to the file's parent.
+    /// Mode applied to every directory from the library root down to the file's parent.
     pub dir_mode: Option<Mode>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StagingConfig {
-    /// Defaults to `<output>/.media-organizer/staging`. Must be on the same
-    /// filesystem as `output`, so the final commit is a metadata-only rename.
-    pub dir: Option<PathBuf>,
     /// Safety valve bounding one commit burst on a huge first run (0 = unlimited).
     #[serde(default = "default_max_batch")]
     pub max_batch: usize,
@@ -139,7 +143,6 @@ pub struct StagingConfig {
 impl Default for StagingConfig {
     fn default() -> Self {
         Self {
-            dir: None,
             max_batch: default_max_batch(),
         }
     }
@@ -213,9 +216,13 @@ impl Default for HealthConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FolderConfig {
+    /// Source folder: an absolute path, or a bare name resolved under `inputs_root`.
     pub input: PathBuf,
-    pub output: PathBuf,
-    /// Label in logs and `/healthz`; defaults to the input path.
+    /// Destination library: an absolute path, or a bare name resolved under
+    /// `libraries_root`.
+    pub library: PathBuf,
+    /// Label in logs, `/healthz` and the work area's directory name; must be
+    /// unique. Defaults to the last component of `input`.
     pub name: Option<String>,
     #[serde(default = "default_pattern")]
     pub pattern: String,
@@ -250,17 +257,17 @@ pub struct FolderConfig {
 impl FolderConfig {
     /// Label for logs and `/healthz`.
     pub fn label(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| self.input.display().to_string())
+        self.name.clone().unwrap_or_else(|| {
+            self.input.file_name().map_or_else(
+                || self.input.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        })
     }
 
-    /// Effective staging directory for this folder.
-    pub fn staging_dir(&self, staging: &StagingConfig) -> PathBuf {
-        staging
-            .dir
-            .clone()
-            .unwrap_or_else(|| self.output.join(".media-organizer").join("staging"))
+    /// This folder's private work area (staging and journal) under `work_root`.
+    pub fn work_subdir(&self, work_root: &Path) -> PathBuf {
+        work_root.join(sanitize_label(&self.label()))
     }
 
     pub fn file_mode(&self, global: &Permissions) -> Option<Mode> {
@@ -284,6 +291,15 @@ pub struct Config {
     /// Ignore files modified less than this many seconds ago (still uploading).
     #[serde(default = "default_stability_secs")]
     pub stability_secs: u64,
+    /// Where bare input names are looked up. Mount each source folder under it.
+    #[serde(default = "default_inputs_root")]
+    pub inputs_root: PathBuf,
+    /// Where bare library names are looked up. Mount each library under it.
+    #[serde(default = "default_libraries_root")]
+    pub libraries_root: PathBuf,
+    /// The service's private work area (staging, journal). Defaults to
+    /// `<state_dir>/work`; it never needs to be mounted except to debug.
+    pub work_dir: Option<PathBuf>,
     /// Overridden by `--state-dir` / `MO_STATE_DIR`.
     pub state_dir: Option<PathBuf>,
     #[serde(default = "default_log_level")]
@@ -305,9 +321,70 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 }
 
 pub fn parse(content: &str) -> Result<Config, ConfigError> {
-    let config: Config = toml::from_str(content)?;
+    let mut config: Config = toml::from_str(content)?;
+    resolve_names(&mut config)?;
     validate(&config)?;
     Ok(config)
+}
+
+impl Config {
+    /// The work area root for a given state directory.
+    pub fn work_root(&self, state_dir: &Path) -> PathBuf {
+        self.work_dir
+            .clone()
+            .unwrap_or_else(|| state_dir.join("work"))
+    }
+}
+
+/// Turn bare names into paths under the configured roots, so a compose file can
+/// mount `/inputs/jordan` and `/libraries/jordan` and the config just says `jordan`.
+fn resolve_names(config: &mut Config) -> Result<(), ConfigError> {
+    for (what, root) in [
+        ("inputs_root", &config.inputs_root),
+        ("libraries_root", &config.libraries_root),
+    ] {
+        if !root.is_absolute() {
+            return invalid(format!("{what} must be an absolute path"));
+        }
+    }
+    let (inputs, libraries) = (config.inputs_root.clone(), config.libraries_root.clone());
+    for folder in &mut config.folders {
+        folder.input = resolve_dir("input", &folder.input, &inputs)?;
+        folder.library = resolve_dir("library", &folder.library, &libraries)?;
+    }
+    Ok(())
+}
+
+fn resolve_dir(what: &str, value: &Path, root: &Path) -> Result<PathBuf, ConfigError> {
+    if value.is_absolute() {
+        return Ok(value.to_path_buf());
+    }
+    let mut parts = value.components();
+    match (parts.next(), parts.next()) {
+        (Some(Component::Normal(_)), None) => Ok(root.join(value)),
+        _ => invalid(format!(
+            "{what} '{}' must be an absolute path or a bare name without '/'",
+            value.display()
+        )),
+    }
+}
+
+/// Make a label safe as a directory name.
+fn sanitize_label(label: &str) -> String {
+    let cleaned: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    match cleaned.as_str() {
+        "" | "." | ".." => "folder".to_string(),
+        _ => cleaned,
+    }
 }
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ConfigError> {
@@ -337,23 +414,31 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         ));
     }
 
+    let mut seen = std::collections::HashSet::new();
     for folder in &config.folders {
-        validate_folder(folder, &config.staging)?;
+        validate_folder(folder)?;
+        // Each folder gets its own work area named after its label.
+        if !seen.insert(sanitize_label(&folder.label())) {
+            return invalid(format!(
+                "two folders share the label '{}': give each a distinct `name`",
+                folder.label()
+            ));
+        }
     }
     Ok(())
 }
 
-fn validate_folder(folder: &FolderConfig, staging: &StagingConfig) -> Result<(), ConfigError> {
+fn validate_folder(folder: &FolderConfig) -> Result<(), ConfigError> {
     let label = folder.label();
 
-    if folder.input == folder.output {
-        return invalid(format!("{label}: input and output must differ"));
+    if folder.input == folder.library {
+        return invalid(format!("{label}: input and library must differ"));
     }
-    // A recursive scan of an input that contains the output would feed on its own output.
-    if folder.recursive && folder.output.starts_with(&folder.input) {
+    // A recursive scan of an input that contains the library would feed on its own output.
+    if folder.recursive && folder.library.starts_with(&folder.input) {
         return invalid(format!(
-            "{label}: output {} is inside the recursive input {}",
-            folder.output.display(),
+            "{label}: library {} is inside the recursive input {}",
+            folder.library.display(),
             folder.input.display()
         ));
     }
@@ -371,32 +456,7 @@ fn validate_folder(folder: &FolderConfig, staging: &StagingConfig) -> Result<(),
             "{label}: extension '{bad}' must be lowercase and without a leading dot"
         ));
     }
-
-    check_same_filesystem(&label, &folder.staging_dir(staging), &folder.output)
-}
-
-/// The staging area must share `output`'s filesystem, or the commit stops being
-/// a metadata-only rename. Compared only when both can be resolved to an
-/// existing ancestor — a not-yet-created tree is checked again at startup.
-fn check_same_filesystem(label: &str, staging: &Path, output: &Path) -> Result<(), ConfigError> {
-    let (Some(a), Some(b)) = (device_of(staging), device_of(output)) else {
-        return Ok(());
-    };
-    if a != b {
-        return invalid(format!(
-            "{label}: staging dir {} is not on the same filesystem as output {}",
-            staging.display(),
-            output.display()
-        ));
-    }
     Ok(())
-}
-
-/// `st_dev` of the nearest existing ancestor of `path`.
-fn device_of(path: &Path) -> Option<u64> {
-    path.ancestors()
-        .find_map(|p| std::fs::metadata(p).ok())
-        .map(|m| m.dev())
 }
 
 #[cfg(test)]
@@ -407,7 +467,7 @@ mod tests {
     const MINIMAL: &str = r#"
 [[folders]]
 input = "/in"
-output = "/out"
+library = "/out"
 "#;
 
     fn with_folder(extra: &str) -> String {
@@ -443,15 +503,6 @@ output = "/out"
         ] {
             assert!(cfg.folders[0].excluded_dirs.iter().any(|e| e == d), "{d}");
         }
-    }
-
-    #[test]
-    fn staging_defaults_under_output() {
-        let cfg = parse(MINIMAL).unwrap();
-        assert_eq!(
-            cfg.folders[0].staging_dir(&cfg.staging),
-            PathBuf::from("/out/.media-organizer/staging")
-        );
     }
 
     #[rstest]
@@ -494,23 +545,23 @@ output = "/out"
     #[rstest]
     #[case("")] // no [[folders]]
     #[case("this is not toml ::::")]
-    #[case("workers = 0\n[[folders]]\ninput = \"/in\"\noutput = \"/out\"")]
-    #[case("log_level = \"verbose\"\n[[folders]]\ninput = \"/in\"\noutput = \"/out\"")]
-    #[case("[health]\nbind = \"nonsense\"\n[[folders]]\ninput = \"/in\"\noutput = \"/out\"")]
-    #[case("[[folders]]\ninput = \"/same\"\noutput = \"/same\"")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/in/sorted\"")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\npattern = \"{stem}_{counter}{ext}\"")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\npattern = \"{yeer}/{stem}\"")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = []")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = [\".jpg\"]")]
-    #[case("[[folders]]\ninput = \"/in\"\noutput = \"/out\"\nextensions = [\"JPG\"]")]
+    #[case("workers = 0\n[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"")]
+    #[case("log_level = \"verbose\"\n[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"")]
+    #[case("[health]\nbind = \"nonsense\"\n[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"")]
+    #[case("[[folders]]\ninput = \"/same\"\nlibrary = \"/same\"")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/in/sorted\"")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\npattern = \"{stem}_{counter}{ext}\"")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\npattern = \"{yeer}/{stem}\"")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\nextensions = []")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\nextensions = [\".jpg\"]")]
+    #[case("[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\nextensions = [\"JPG\"]")]
     fn invalid_configs_are_rejected(#[case] toml: &str) {
         assert!(parse(toml).is_err(), "accepted: {toml}");
     }
 
     #[test]
     fn output_inside_input_is_fine_when_not_recursive() {
-        let toml = "[[folders]]\ninput = \"/in\"\noutput = \"/in/sorted\"\nrecursive = false";
+        let toml = "[[folders]]\ninput = \"/in\"\nlibrary = \"/in/sorted\"\nrecursive = false";
         assert!(parse(toml).is_ok());
     }
 
@@ -529,20 +580,114 @@ output = "/out"
         ));
     }
 
-    #[test]
-    fn staging_on_another_filesystem_is_rejected() {
-        let output = tempfile::tempdir().unwrap();
-        // /proc is always a different filesystem from a regular temp dir.
-        let toml = format!(
-            "[staging]\ndir = \"/proc/staging\"\n[[folders]]\ninput = \"/in\"\noutput = \"{}\"",
-            output.path().display()
-        );
-        let err = parse(&toml).unwrap_err().to_string();
-        assert!(err.contains("same filesystem"), "{err}");
+    // -- inputs, libraries and the work area ---------------------------------
+
+    fn folders(toml: &str) -> Vec<FolderConfig> {
+        parse(toml).unwrap().folders
     }
 
     #[test]
-    fn unresolvable_paths_skip_the_filesystem_check() {
-        assert!(check_same_filesystem("x", Path::new("/a/b"), Path::new("/c/d")).is_ok());
+    fn bare_names_resolve_under_the_roots() {
+        let f = &folders("[[folders]]\ninput = \"jordan\"\nlibrary = \"photos\"")[0];
+        assert_eq!(f.input, PathBuf::from("/inputs/jordan"));
+        assert_eq!(f.library, PathBuf::from("/libraries/photos"));
+    }
+
+    #[test]
+    fn the_roots_are_configurable() {
+        let f = &folders(
+            "inputs_root = \"/in\"\nlibraries_root = \"/lib\"\n[[folders]]\ninput = \"a\"\nlibrary = \"b\"",
+        )[0];
+        assert_eq!(f.input, PathBuf::from("/in/a"));
+        assert_eq!(f.library, PathBuf::from("/lib/b"));
+    }
+
+    #[test]
+    fn absolute_paths_are_kept_as_they_are() {
+        let f = &folders("[[folders]]\ninput = \"/mnt/x/in\"\nlibrary = \"/mnt/x/lib\"")[0];
+        assert_eq!(f.input, PathBuf::from("/mnt/x/in"));
+        assert_eq!(f.library, PathBuf::from("/mnt/x/lib"));
+    }
+
+    #[rstest]
+    #[case("sub/dir")]
+    #[case("../escape")]
+    #[case("./here")]
+    #[case("")]
+    fn ambiguous_relative_paths_are_rejected(#[case] value: &str) {
+        let toml = format!("[[folders]]\ninput = \"{value}\"\nlibrary = \"/lib\"");
+        let err = parse(&toml).unwrap_err().to_string();
+        assert!(err.contains("bare name"), "{value:?}: {err}");
+    }
+
+    #[test]
+    fn relative_roots_are_rejected() {
+        assert!(
+            parse("inputs_root = \"inputs\"\n[[folders]]\ninput = \"a\"\nlibrary = \"b\"").is_err()
+        );
+    }
+
+    #[test]
+    fn the_label_defaults_to_the_input_name() {
+        let f = &folders("[[folders]]\ninput = \"jordan\"\nlibrary = \"photos\"")[0];
+        assert_eq!(f.label(), "jordan");
+        let f =
+            &folders("[[folders]]\nname = \"phone\"\ninput = \"jordan\"\nlibrary = \"photos\"")[0];
+        assert_eq!(f.label(), "phone");
+    }
+
+    #[test]
+    fn two_folders_with_the_same_label_are_rejected() {
+        // Two Nextcloud users both sync into ".../synchronisation".
+        let toml = "[[folders]]\ninput = \"/a/synchronisation\"\nlibrary = \"/x\"\n\
+                    [[folders]]\ninput = \"/b/synchronisation\"\nlibrary = \"/y\"";
+        let err = parse(toml).unwrap_err().to_string();
+        assert!(err.contains("distinct `name`"), "{err}");
+
+        let fixed = toml.replacen("[[folders]]", "[[folders]]\nname = \"one\"", 1);
+        assert!(parse(&fixed).is_ok());
+    }
+
+    #[test]
+    fn the_work_area_is_private_per_folder_and_defaults_under_the_state_dir() {
+        let cfg = parse(
+            "[[folders]]\ninput = \"jordan\"\nlibrary = \"a\"\n[[folders]]\ninput = \"sylvie\"\nlibrary = \"b\"",
+        )
+        .unwrap();
+        let root = cfg.work_root(Path::new("/var/lib/media-organizer"));
+        assert_eq!(root, PathBuf::from("/var/lib/media-organizer/work"));
+        assert_eq!(cfg.folders[0].work_subdir(&root), root.join("jordan"));
+        assert_ne!(
+            cfg.folders[0].work_subdir(&root),
+            cfg.folders[1].work_subdir(&root)
+        );
+    }
+
+    #[test]
+    fn work_dir_can_be_set_explicitly() {
+        let cfg =
+            parse("work_dir = \"/work\"\n[[folders]]\ninput = \"a\"\nlibrary = \"b\"").unwrap();
+        assert_eq!(cfg.work_root(Path::new("/state")), PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn labels_become_safe_directory_names() {
+        assert_eq!(sanitize_label("Sony Alpha 7"), "Sony_Alpha_7");
+        assert_eq!(sanitize_label("a/b"), "a_b");
+        assert_eq!(sanitize_label(".."), "folder");
+        assert_eq!(sanitize_label(""), "folder");
+    }
+
+    #[test]
+    fn the_old_staging_dir_key_is_gone() {
+        assert!(
+            parse("[staging]\ndir = \"/x\"\n[[folders]]\ninput = \"a\"\nlibrary = \"b\"").is_err()
+        );
+    }
+
+    #[test]
+    fn the_old_output_key_is_rejected() {
+        let err = parse("[[folders]]\ninput = \"/in\"\noutput = \"/out\"").unwrap_err();
+        assert!(err.to_string().contains("config") || format!("{err:?}").contains("output"));
     }
 }

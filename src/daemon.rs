@@ -46,7 +46,7 @@ mod tests {
         state: &std::path::Path,
     ) -> Scanner {
         let cfg = config::parse(&format!(
-            "stability_secs = 0\nworkers = 1\n[[folders]]\ninput = \"{}\"\noutput = \"{}\"\npattern = \"{{year}}/{{stem}}{{ext}}\"\n",
+            "stability_secs = 0\nworkers = 1\n[[folders]]\ninput = \"{}\"\nlibrary = \"{}\"\npattern = \"{{year}}/{{stem}}{{ext}}\"\n",
             input.display(),
             output.display()
         ))

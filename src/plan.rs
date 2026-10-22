@@ -116,7 +116,7 @@ mod tests {
 
     fn folder(extra: &str) -> FolderConfig {
         config::parse(&format!(
-            "[[folders]]\ninput = \"/in\"\noutput = \"/out\"\n{extra}"
+            "[[folders]]\ninput = \"/in\"\nlibrary = \"/out\"\n{extra}"
         ))
         .unwrap()
         .folders

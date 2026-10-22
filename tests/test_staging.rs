@@ -43,10 +43,7 @@ fn nothing_is_written_to_output_before_the_commit() {
     assert!(!env.out("2025").exists(), "not even a directory");
     assert!(sources.iter().all(|s| s.exists()), "every source intact");
     assert!(
-        std::fs::read_dir(env.output.path().join(".media-organizer/staging"))
-            .unwrap()
-            .count()
-            > 0,
+        std::fs::read_dir(env.work_dir()).unwrap().count() > 0,
         "the batch was genuinely prepared in staging"
     );
 }
@@ -74,9 +71,7 @@ fn staging_is_empty_after_a_successful_scan() {
     let mut scanner = env.scanner("", "");
     env.scan(&mut scanner);
 
-    let left: Vec<_> = std::fs::read_dir(env.output.path().join(".media-organizer/staging"))
-        .unwrap()
-        .collect();
+    let left: Vec<_> = std::fs::read_dir(env.work_dir()).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
 }
 
@@ -85,8 +80,9 @@ fn a_staging_dir_inside_input_is_never_inventoried() {
     let env = Env::new();
     populate(&env);
     // Leftovers of an interrupted run sit in staging, *inside* the scanned tree.
-    let staging = env.input.path().join("_staging");
-    let mut scanner = env.scanner(&format!("[staging]\ndir = \"{}\"", staging.display()), "");
+    let work = env.input.path().join("_work");
+    let staging = work.join("t");
+    let mut scanner = env.scanner(&format!("work_dir = \"{}\"", work.display()), "");
     let stop = AtomicBool::new(false);
     scanner.scan_once(&StopAfterPreparation(&stop), &stop);
     assert!(std::fs::read_dir(&staging).unwrap().count() > 0);
@@ -155,7 +151,7 @@ fn exif_injection_works_on_a_copy_and_the_source_is_never_rewritten() {
         1,
         "no shared inode"
     );
-    let staged = std::fs::read_dir(env.output.path().join(".media-organizer/staging"))
+    let staged = std::fs::read_dir(env.work_dir())
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
