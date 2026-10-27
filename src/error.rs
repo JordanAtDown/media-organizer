@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -61,6 +62,23 @@ pub enum ScanError {
     Staging(#[from] StagingError),
     #[error(transparent)]
     Dedup(#[from] DedupError),
+}
+
+#[derive(Debug, Error)]
+pub enum HttpError {
+    #[error("invalid URL {url:?}: {reason}")]
+    Url { url: String, reason: String },
+    #[error("cannot resolve {0}")]
+    Resolve(String),
+    #[error("cannot connect to {addr}: {source}")]
+    Connect {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+    #[error("no response: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("malformed HTTP response")]
+    Malformed,
 }
 
 #[derive(Debug, Error)]

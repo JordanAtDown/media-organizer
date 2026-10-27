@@ -8,6 +8,7 @@ pub mod dedup;
 pub mod error;
 pub mod fsops;
 pub mod health;
+pub mod http;
 pub mod logtime;
 pub mod metadata;
 pub mod naming;

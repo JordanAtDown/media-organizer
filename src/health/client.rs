@@ -1,8 +1,8 @@
 //! Probe used by the container `HEALTHCHECK`, so the image needs no `curl`.
 
 use crate::error::HealthError;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use crate::http;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -12,31 +12,13 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// `bind` is the server's bind address; a wildcard host (`0.0.0.0`, `[::]`) is
 /// probed through loopback.
 pub fn probe(bind: &str) -> Result<(), HealthError> {
-    let err = |m: String| HealthError::Probe(m);
     let addr = loopback_for(bind)?;
-
-    let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT)
-        .map_err(|e| err(format!("cannot connect to {addr}: {e}")))?;
-    stream.set_read_timeout(Some(TIMEOUT)).ok();
-    stream.set_write_timeout(Some(TIMEOUT)).ok();
-    stream
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .map_err(|e| err(e.to_string()))?;
-
-    let mut raw = String::new();
-    stream
-        .read_to_string(&mut raw)
-        .map_err(|e| err(format!("no response: {e}")))?;
-
-    let code: u16 = raw
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse().ok())
-        .ok_or_else(|| err("malformed HTTP response".into()))?;
+    let code = http::get(addr, "localhost", "/healthz", TIMEOUT)
+        .map_err(|e| HealthError::Probe(e.to_string()))?;
     if (200..300).contains(&code) {
         Ok(())
     } else {
-        Err(err(format!("healthz returned HTTP {code}")))
+        Err(HealthError::Probe(format!("healthz returned HTTP {code}")))
     }
 }
 

@@ -3,6 +3,7 @@
 //! They are plain `HashMap`s with no locking: only the sequential phases of the
 //! pipeline (inventory, resolution, commit) ever touch them.
 
+use crate::fsops;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -60,15 +61,10 @@ impl<V: Serialize + DeserializeOwned> Store<V> {
         if !self.dirty {
             return Ok(());
         }
-        if let Some(parent) = self.file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = self.file.with_extension("json.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_vec(&self.entries).map_err(io::Error::other)?,
-        )?;
-        std::fs::rename(&tmp, &self.file)?;
+        let bytes = serde_json::to_vec(&self.entries).map_err(io::Error::other)?;
+        let dir = self.file.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir)?;
+        fsops::write_atomic(&self.file, dir, &bytes, None)?;
         self.dirty = false;
         Ok(())
     }

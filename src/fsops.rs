@@ -2,7 +2,7 @@
 
 use crate::config::Mode;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use tracing::warn;
@@ -109,6 +109,41 @@ pub fn copy_file(src: &Path, dst: &Path) -> io::Result<Materialized> {
     Ok(Materialized::Copied)
 }
 
+/// Write `bytes` to `dest` so a reader sees the previous file or the complete new
+/// one, never a truncated one.
+///
+/// The bytes go to a temporary file in `tmp_dir`, are flushed to disk, then
+/// renamed over `dest`. `tmp_dir` must be on `dest`'s filesystem (a `rename` is
+/// only atomic there): pass `dest`'s own directory, or a subdirectory of it when
+/// something watches that directory and must not be woken by the temporary file.
+/// `mode` is applied to the temporary file (ignoring the umask) before the
+/// rename; `None` keeps the umask default. A failure leaves no temporary behind.
+pub fn write_atomic(
+    dest: &Path,
+    tmp_dir: &Path,
+    bytes: &[u8],
+    mode: Option<Mode>,
+) -> io::Result<()> {
+    let name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no file name"))?
+        .to_string_lossy();
+    let tmp = tmp_dir.join(format!(".{name}.{}.tmp", std::process::id()));
+
+    let write = || -> io::Result<()> {
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        apply_mode(&tmp, mode)?;
+        std::fs::rename(&tmp, dest)
+    };
+    let result = write();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Why [`remove_if_identical`] left the source alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kept {
@@ -212,6 +247,62 @@ mod tests {
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o640)).unwrap();
         apply_mode(&f, None).unwrap();
         assert_eq!(mode_of(&f), 0o640);
+    }
+
+    #[test]
+    fn write_atomic_creates_then_replaces_and_leaves_no_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("event.json");
+
+        write_atomic(&dest, dir.path(), b"one", None).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"one");
+        write_atomic(&dest, dir.path(), b"two", None).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"two");
+
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["event.json"]);
+    }
+
+    #[test]
+    fn write_atomic_keeps_the_temporary_out_of_the_destination_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_dir = dir.path().join(".tmp");
+        std::fs::create_dir(&tmp_dir).unwrap();
+        let dest = dir.path().join("event.json");
+
+        write_atomic(&dest, &tmp_dir, b"x", Some(Mode(0o644))).unwrap();
+
+        assert_eq!(mode_of(&dest), 0o644);
+        assert_eq!(std::fs::read_dir(&tmp_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn write_atomic_failure_leaves_the_old_file_and_no_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("event.json");
+        write_atomic(&dest, dir.path(), b"old", None).unwrap();
+
+        // The rename onto a non-empty directory fails after the temp was written.
+        let blocked = dir.path().join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("child"), b"x").unwrap();
+        assert!(write_atomic(&blocked, dir.path(), b"new", None).is_err());
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

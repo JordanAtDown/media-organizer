@@ -24,7 +24,6 @@ use crate::naming::with_suffix;
 use crate::resolve::Resolved;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
@@ -234,17 +233,13 @@ impl Staging {
                 Err(e) => Err(io(e)),
             };
         }
-        let tmp = path.with_extension("jsonl.tmp");
         let mut buf = Vec::new();
         for entry in entries {
             serde_json::to_writer(&mut buf, entry)
                 .map_err(|e| StagingError::Journal(e.to_string()))?;
             buf.push(b'\n');
         }
-        let mut file = std::fs::File::create(&tmp).map_err(io)?;
-        file.write_all(&buf).map_err(io)?;
-        file.sync_all().map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(io)
+        fsops::write_atomic(&path, &self.dir, &buf, None).map_err(io)
     }
 
     /// Entries still waiting in the journal. A malformed line is skipped with a
