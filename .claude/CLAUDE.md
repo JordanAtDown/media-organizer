@@ -21,6 +21,9 @@ refaites pas cette erreur.
 4. **Un doublon n'est jamais supprimé.** Même nom de destination + même taille + même
    empreinte BLAKE3 : la source reste en place et est mémorisée. On ne hache que si les
    tailles collisionnent.
+   Seule exception, opt-in (`dedup.delete_source_duplicates`, défaut `false`) : en phase 5,
+   `fsops::remove_if_identical` relit les deux fichiers octet par octet (jamais l'index de
+   hachage) et ne supprime que si l'original est déjà sur disque ; au moindre doute, rien.
 5. **La source n'est jamais réécrite.** L'injection EXIF se fait sur la copie dans la zone de travail ;
    la source n'est supprimée qu'après publication.
 6. **La chaîne de date est EXIF → QuickTime → nom de fichier → mtime, dans cet ordre exact.**

@@ -30,7 +30,8 @@ métier éprouvée, architecture refaite pour le Pi.
 - **Dernier recours : la date de dernière modification du fichier.** Plus aucun fichier ne
   reste bloqué dans le dossier de dépôt (désactivable : `use_mtime_fallback = false`).
 - **Détection de doublons** : même nom de destination *et* même contenu. Le doublon reste en
-  place, mémorisé, **jamais supprimé**.
+  place, mémorisé, **jamais supprimé** (sauf opt-in `dedup.delete_source_duplicates`, après
+  relecture octet par octet des deux fichiers).
 - **Transactionnel** : tout est traité dans une zone de travail privée, puis publié d'un
   coup dans la librairie. Une coupure en cours de route se rattrape au scan suivant
   (journal de reprise).

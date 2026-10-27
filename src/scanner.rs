@@ -15,9 +15,10 @@
 use crate::config::{Config, FolderConfig};
 use crate::date_reader::DateSource;
 use crate::dedup::Digester;
+use crate::fsops;
 use crate::metadata::exif_write::TMP_PREFIX;
 use crate::plan::{extension_lower, plan_file, Candidate, FilePlan, PlanOutcome};
-use crate::resolve::{resolve, Resolution, Resolved};
+use crate::resolve::{resolve, Duplicate, Resolution, Resolved};
 use crate::staging::Staging;
 use crate::state::{DuplicateCache, HashIndex, NoDateCache};
 use rayon::prelude::*;
@@ -78,6 +79,8 @@ pub struct FolderSummary {
     pub found: usize,
     pub organized: usize,
     pub duplicates: usize,
+    /// Duplicate sources removed (`dedup.delete_source_duplicates`); a subset of `duplicates`.
+    pub duplicates_removed: usize,
     pub conflicts_skipped: usize,
     pub no_date: usize,
     pub failed: usize,
@@ -282,13 +285,29 @@ impl Scanner {
             &self.config.dedup,
             &mut self.digester,
         );
+        // PHASE 5 (source cleanup) — see `dispose_duplicates`; here they are only
+        // sorted into "to remove" and "to remember".
+        let mut removable = Vec::new();
         for dup in duplicates {
-            info!(
-                path = %dup.source.display(), existing = %dup.of.display(),
-                "duplicate: identical file already organized; leaving the source in place"
-            );
-            self.duplicates.insert(dup.source, dup.mtime, dup.of);
-            sum.duplicates += 1;
+            if self.config.dedup.delete_source_duplicates && dup.of_on_disk && self.dry_run {
+                info!(
+                    path = %dup.source.display(), existing = %dup.of.display(),
+                    "[dry-run] duplicate: would remove the source if still byte-identical"
+                );
+                sum.duplicates += 1;
+            } else if self.config.dedup.delete_source_duplicates && dup.of_on_disk {
+                removable.push(dup);
+            } else if self.config.dedup.delete_source_duplicates && !dup.of_on_disk {
+                // `of` is only a name this batch has not published yet. Not
+                // remembered: next scan it is a file on disk and can be verified.
+                info!(
+                    path = %dup.source.display(), existing = %dup.of.display(),
+                    "duplicate within the batch; source kept until the original is published"
+                );
+                sum.duplicates += 1;
+            } else {
+                self.remember_duplicate(dup, &mut sum);
+            }
         }
         for (source, existing) in skipped {
             info!(path = %source.display(), existing = %existing.display(), "skipping: destination exists");
@@ -331,6 +350,8 @@ impl Scanner {
         let Some(staging) = staging else {
             return sum;
         };
+
+        self.dispose_duplicates(removable, shutdown, &mut sum);
 
         if resolved.is_empty() || shutdown.load(Ordering::SeqCst) {
             self.finish_folder(&mut sum, Some(&staging), observer, &label);
@@ -389,6 +410,59 @@ impl Scanner {
 
         self.finish_folder(&mut sum, Some(&staging), observer, &label);
         sum
+    }
+
+    fn remember_duplicate(&mut self, dup: Duplicate, sum: &mut FolderSummary) {
+        info!(
+            path = %dup.source.display(), existing = %dup.of.display(),
+            "duplicate: identical file already organized; leaving the source in place"
+        );
+        self.duplicates.insert(dup.source, dup.mtime, dup.of);
+        sum.duplicates += 1;
+    }
+
+    /// PHASE 5, source cleanup (`dedup.delete_source_duplicates`). The only place
+    /// a duplicate source is ever deleted, and only after
+    /// [`fsops::remove_if_identical`] re-read both files byte for byte, so the
+    /// (path, size, mtime) hash index is never what the deletion rests on. The
+    /// library is not written. Anything short of a proof keeps the source: a
+    /// mismatch is remembered like any duplicate, a read error is retried next scan.
+    fn dispose_duplicates(
+        &mut self,
+        removable: Vec<Duplicate>,
+        shutdown: &AtomicBool,
+        sum: &mut FolderSummary,
+    ) {
+        for dup in removable {
+            if shutdown.load(Ordering::SeqCst) {
+                // Not remembered: the next scan finds it again and decides then.
+                return;
+            }
+            match fsops::remove_if_identical(&dup.source, &dup.of, dup.mtime) {
+                Ok(Ok(())) => {
+                    info!(
+                        path = %dup.source.display(), existing = %dup.of.display(),
+                        "duplicate: verified byte-identical to the organized file; source removed"
+                    );
+                    sum.duplicates += 1;
+                    sum.duplicates_removed += 1;
+                }
+                Ok(Err(kept)) => {
+                    warn!(
+                        path = %dup.source.display(), existing = %dup.of.display(), reason = ?kept,
+                        "duplicate not removed: byte-for-byte check did not confirm it"
+                    );
+                    self.remember_duplicate(dup, sum);
+                }
+                Err(e) => {
+                    warn!(
+                        path = %dup.source.display(), existing = %dup.of.display(), error = %e,
+                        "cannot verify duplicate; source kept, will retry"
+                    );
+                    sum.duplicates += 1;
+                }
+            }
+        }
     }
 
     fn finish_folder(

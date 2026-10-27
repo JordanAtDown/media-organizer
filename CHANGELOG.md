@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `dedup.delete_source_duplicates` (default `false`): remove the source of a duplicate once
+  it is proven byte-identical to the file already in the library. The check is a fresh
+  byte-for-byte read of both files at removal time (not the cached BLAKE3 index); a
+  duplicate inside the same batch waits for the next scan, and any doubt (different
+  content, source modified since planning, symlink, same inode, read error) keeps the
+  source. Runs in phase 5; `--dry-run` only logs. Requires `dedup.enabled` and
+  `dedup.check_existing`. Duplicates remembered before enabling it are not re-examined:
+  delete `duplicates.json` once.
+
 ---
 
 ## [1.1.2] - 2026-10-22

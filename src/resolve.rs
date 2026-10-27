@@ -34,6 +34,9 @@ pub struct Duplicate {
     pub source: PathBuf,
     pub mtime: u64,
     pub of: PathBuf,
+    /// `of` is a file already in the library, not a name another file of this
+    /// batch will only get at commit. Only then can the source be removed.
+    pub of_on_disk: bool,
 }
 
 #[derive(Debug, Default)]
@@ -101,6 +104,7 @@ pub fn resolve(
                             source: plan.source,
                             mtime: plan.mtime,
                             of: name,
+                            of_on_disk: !occupant.in_batch,
                         });
                         continue 'files;
                     }
@@ -351,6 +355,10 @@ mod tests {
         assert_eq!(r.duplicates.len(), 1);
         assert!(r.duplicates[0].source.ends_with("b.jpg"));
         assert!(r.duplicates[0].of.ends_with("x/p.jpg"));
+        assert!(
+            !r.duplicates[0].of_on_disk,
+            "the original is not published yet"
+        );
     }
 
     #[test]
@@ -363,6 +371,7 @@ mod tests {
         );
         assert!(r.resolved.is_empty());
         assert_eq!(r.duplicates[0].of, existing);
+        assert!(r.duplicates[0].of_on_disk);
     }
 
     #[test]
@@ -448,6 +457,7 @@ mod tests {
         let cfg = DedupConfig {
             enabled: true,
             check_existing: false,
+            ..DedupConfig::default()
         };
         let plans = vec![f.plan("a.jpg", b"same", "x/p.jpg")];
         let r = resolve(plans, f.output.path(), OnConflict::Rename, &cfg, &mut d);
@@ -466,6 +476,7 @@ mod tests {
         let off = DedupConfig {
             enabled: false,
             check_existing: true,
+            ..DedupConfig::default()
         };
         let r = resolve(plans, f.output.path(), OnConflict::Rename, &off, &mut d);
         assert_eq!(f.names(&r), vec!["x/p.jpg", "x/p_1.jpg"]);

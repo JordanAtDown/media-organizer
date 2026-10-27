@@ -56,7 +56,10 @@ isolé par `catch_unwind` : une panique ne tue pas le lot.
 source (résultat reproductible), puis chaque nom final est alloué depuis **une seule table
 en mémoire** : il n'y a plus de course `exists()`/`rename()`. Si un nom est pris :
 
-- même taille *et* même empreinte → **doublon** : la source reste en place, est mémorisée ;
+- même taille *et* même empreinte → **doublon** : la source reste en place, est mémorisée.
+  Avec `dedup.delete_source_duplicates`, la source d'un doublon dont l'original est déjà sur
+  disque est supprimée en phase 5 après une relecture octet par octet des deux fichiers ;
+  un doublon du même lot attend le scan suivant ;
 - sinon `on_conflict` : `rename` essaie `_1`, `_2`… ; `skip` laisse la source ; `overwrite`
   remplace un fichier **déjà sur disque** (jamais un fichier du même lot : ce serait en
   perdre un).

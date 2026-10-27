@@ -72,13 +72,22 @@ max_batch = 1000
 
 # ── Doublons ──────────────────────────────────────────────────────────────────────
 # Un doublon = même nom de destination ET contenu identique (empreinte BLAKE3).
-# Jamais supprimé automatiquement : un faux positif détruirait une photo de famille.
+# Par défaut jamais supprimé : un faux positif détruirait une photo de famille.
 # Il reste dans `input`, est journalisé une fois et mémorisé (state_dir/duplicates.json).
 # On ne hache que les fichiers dont la taille collisionne : dans le cas nominal, rien.
 [dedup]
 enabled = true
 # Comparer aussi aux fichiers déjà rangés (sinon : seulement au sein du lot courant).
 check_existing = true
+# Supprimer la source d'un doublon (typiquement un client de synchronisation qui renvoie
+# un fichier déjà rangé). Désactivé par défaut. La source n'est supprimée qu'après une
+# relecture octet par octet, à cet instant, des deux fichiers (jamais sur la seule foi de
+# l'empreinte mémorisée), et seulement si l'original est déjà dans la librairie : un
+# doublon au sein du même lot attend le scan suivant. Au moindre doute (contenu différent,
+# source modifiée, lien symbolique, même inode, erreur de lecture), rien n'est supprimé.
+# Exige enabled = true et check_existing = true. Les doublons déjà mémorisés avant
+# l'activation ne sont pas réexaminés : supprimer state_dir/duplicates.json une fois.
+delete_source_duplicates = false
 
 # ── Fichiers sans date ────────────────────────────────────────────────────────────
 # Mémoire des fichiers qu'aucune source n'a pu dater. Avec use_mtime_fallback = true

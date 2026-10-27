@@ -156,6 +156,10 @@ pub struct DedupConfig {
     /// Also compare against files already present at the destination.
     #[serde(default = "default_true")]
     pub check_existing: bool,
+    /// Remove a source proven byte-identical to a file already in the library.
+    /// Off by default: duplicates are otherwise never deleted.
+    #[serde(default)]
+    pub delete_source_duplicates: bool,
 }
 
 impl Default for DedupConfig {
@@ -163,6 +167,7 @@ impl Default for DedupConfig {
         Self {
             enabled: true,
             check_existing: true,
+            delete_source_duplicates: false,
         }
     }
 }
@@ -418,6 +423,15 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
         ));
     }
 
+    if config.dedup.delete_source_duplicates
+        && !(config.dedup.enabled && config.dedup.check_existing)
+    {
+        return invalid(
+            "dedup.delete_source_duplicates needs dedup.enabled and dedup.check_existing: \
+             a source is only removed against a file already in the library",
+        );
+    }
+
     let mut seen = std::collections::HashSet::new();
     for folder in &config.folders {
         validate_folder(folder)?;
@@ -491,6 +505,10 @@ library = "/out"
         assert!(!f.lowercase_ext);
         assert_eq!(f.on_conflict, OnConflict::Rename);
         assert!(cfg.dedup.enabled && cfg.dedup.check_existing);
+        assert!(
+            !cfg.dedup.delete_source_duplicates,
+            "never deletes unless asked"
+        );
         assert_eq!(cfg.staging.max_batch, 1000);
         assert_eq!(cfg.health.bind, "0.0.0.0:8080");
     }
@@ -575,6 +593,15 @@ library = "/out"
         assert!(parse(&with_folder("wokers = 4")).is_err());
         assert!(parse(&format!("{MINIMAL}oops = 1")).is_err());
         assert!(parse(&with_folder("[dedup]\nenable = true")).is_err());
+    }
+
+    #[test]
+    fn delete_source_duplicates_is_opt_in_and_needs_a_comparison_with_the_library() {
+        let on = |dedup: &str| parse(&with_folder(&format!("[dedup]\n{dedup}")));
+        assert!(on("delete_source_duplicates = true").is_ok());
+        assert!(on("delete_source_duplicates = false\nenabled = false").is_ok());
+        assert!(on("delete_source_duplicates = true\nenabled = false").is_err());
+        assert!(on("delete_source_duplicates = true\ncheck_existing = false").is_err());
     }
 
     #[test]

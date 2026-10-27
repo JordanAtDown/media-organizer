@@ -120,6 +120,9 @@ Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
   de rester dans le dossier de dépôt (`use_mtime_fallback = false` rétablit l'ancien contrat).
   Il peut donc atterrir dans un mois inexact — d'où le `warn` et le compteur dédié.
 - Un doublon exact n'est plus renommé `_1` : il reste dans `input` et est mémorisé.
+  Option `dedup.delete_source_duplicates = true` (défaut `false`) : la source est supprimée
+  si elle est vérifiée identique octet par octet à la copie déjà rangée. Utile quand un client
+  de synchronisation (Nextcloud iOS) ré-uploade un fichier après son rangement.
 - Le cache `no_date_cache.json` du NAS contient des chemins `/volume1/…` qui n'existent
   plus vus du Pi : **on repart d'un cache vide**. Le premier scan journalise une fois les
   fichiers sans date, puis se tait.

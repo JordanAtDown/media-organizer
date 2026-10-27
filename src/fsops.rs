@@ -1,8 +1,9 @@
 //! Filesystem primitives shared by the staging and commit phases.
 
 use crate::config::Mode;
-use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::File;
+use std::io::{self, Read};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use tracing::warn;
 
@@ -108,10 +109,86 @@ pub fn copy_file(src: &Path, dst: &Path) -> io::Result<Materialized> {
     Ok(Materialized::Copied)
 }
 
+/// Why [`remove_if_identical`] left the source alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// Not two distinct regular files (missing target, symlink, same inode).
+    NotComparable,
+    /// Sizes or contents differ.
+    Different,
+    /// The source changed while it was being compared.
+    Changed,
+}
+
+/// Delete `source` only if it is provably the same bytes as `target`.
+///
+/// This is a fresh check, independent of every cache: both files are read in
+/// full right now, and `source` must still have the size and mtime the scan
+/// planned with (`source_mtime`) before and after the comparison. Any doubt or
+/// read error keeps the source: `Err` means nothing was removed.
+pub fn remove_if_identical(
+    source: &Path,
+    target: &Path,
+    source_mtime: u64,
+) -> io::Result<Result<(), Kept>> {
+    let (src_meta, dst_meta) = (
+        std::fs::symlink_metadata(source)?,
+        std::fs::symlink_metadata(target)?,
+    );
+    if !src_meta.is_file() || !dst_meta.is_file() {
+        return Ok(Err(Kept::NotComparable));
+    }
+    if (src_meta.dev(), src_meta.ino()) == (dst_meta.dev(), dst_meta.ino()) {
+        return Ok(Err(Kept::NotComparable));
+    }
+    if src_meta.len() != dst_meta.len() {
+        return Ok(Err(Kept::Different));
+    }
+    if src_meta.mtime() as u64 != source_mtime {
+        return Ok(Err(Kept::Changed));
+    }
+    if !same_bytes(File::open(source)?, File::open(target)?)? {
+        return Ok(Err(Kept::Different));
+    }
+    let after = std::fs::symlink_metadata(source)?;
+    if after.len() != src_meta.len() || after.modified()? != src_meta.modified()? {
+        return Ok(Err(Kept::Changed));
+    }
+    std::fs::remove_file(source)?;
+    Ok(Ok(()))
+}
+
+fn same_bytes(mut a: File, mut b: File) -> io::Result<bool> {
+    const CHUNK: usize = 256 * 1024;
+    let (mut buf_a, mut buf_b) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
+    loop {
+        let (n_a, n_b) = (fill(&mut a, &mut buf_a)?, fill(&mut b, &mut buf_b)?);
+        if n_a != n_b || buf_a[..n_a] != buf_b[..n_b] {
+            return Ok(false);
+        }
+        if n_a == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Read until `buf` is full or EOF, so both sides are compared on equal chunks.
+fn fill(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match r.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
     use std::path::PathBuf;
 
     fn mode_of(p: &Path) -> u32 {
@@ -291,5 +368,114 @@ mod tests {
         let src = dir.path().join("src");
         std::fs::write(&src, b"x").unwrap();
         assert!(link_or_copy(&src, Path::new("/proc/nope")).is_err());
+    }
+
+    // -- remove_if_identical ---------------------------------------------------
+
+    fn pair(a: &[u8], b: &[u8]) -> (tempfile::TempDir, PathBuf, PathBuf, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dst) = (dir.path().join("src"), dir.path().join("dst"));
+        std::fs::write(&src, a).unwrap();
+        std::fs::write(&dst, b).unwrap();
+        let mtime = std::fs::metadata(&src).unwrap().mtime() as u64;
+        (dir, src, dst, mtime)
+    }
+
+    #[test]
+    fn identical_source_is_removed() {
+        let (_d, src, dst, mtime) = pair(b"same bytes", b"same bytes");
+        assert_eq!(remove_if_identical(&src, &dst, mtime).unwrap(), Ok(()));
+        assert!(!src.exists() && dst.exists());
+    }
+
+    #[test]
+    fn identical_large_source_is_removed() {
+        let big = vec![7u8; 600 * 1024];
+        let (_d, src, dst, mtime) = pair(&big, &big);
+        assert_eq!(remove_if_identical(&src, &dst, mtime).unwrap(), Ok(()));
+        assert!(!src.exists());
+    }
+
+    #[test]
+    fn same_size_different_content_is_kept() {
+        let (_d, src, dst, mtime) = pair(b"aaaa", b"aaab");
+        assert_eq!(
+            remove_if_identical(&src, &dst, mtime).unwrap(),
+            Err(Kept::Different)
+        );
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn a_difference_in_a_late_chunk_is_found() {
+        let mut other = vec![7u8; 600 * 1024];
+        let one = other.clone();
+        *other.last_mut().unwrap() = 8;
+        let (_d, src, dst, mtime) = pair(&one, &other);
+        assert_eq!(
+            remove_if_identical(&src, &dst, mtime).unwrap(),
+            Err(Kept::Different)
+        );
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn different_size_is_kept() {
+        let (_d, src, dst, mtime) = pair(b"short", b"shorter");
+        assert_eq!(
+            remove_if_identical(&src, &dst, mtime).unwrap(),
+            Err(Kept::Different)
+        );
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn missing_target_is_an_error_and_keeps_the_source() {
+        let (_d, src, dst, mtime) = pair(b"x", b"x");
+        std::fs::remove_file(&dst).unwrap();
+        assert!(remove_if_identical(&src, &dst, mtime).is_err());
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn a_source_modified_since_the_plan_is_kept() {
+        let (_d, src, dst, mtime) = pair(b"same", b"same");
+        assert_eq!(
+            remove_if_identical(&src, &dst, mtime + 60).unwrap(),
+            Err(Kept::Changed)
+        );
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn a_hard_link_of_the_target_is_never_removed() {
+        let (_d, src, dst, mtime) = pair(b"same", b"same");
+        std::fs::remove_file(&src).unwrap();
+        std::fs::hard_link(&dst, &src).unwrap();
+        assert_eq!(
+            remove_if_identical(&src, &dst, mtime).unwrap(),
+            Err(Kept::NotComparable)
+        );
+        assert!(src.exists());
+        assert_eq!(
+            remove_if_identical(&dst, &dst, mtime).unwrap(),
+            Err(Kept::NotComparable)
+        );
+    }
+
+    #[test]
+    fn a_symlink_is_never_followed_or_removed() {
+        let (_d, src, dst, mtime) = pair(b"same", b"same");
+        let link = src.with_file_name("link");
+        std::os::unix::fs::symlink(&dst, &link).unwrap();
+        assert_eq!(
+            remove_if_identical(&link, &dst, mtime).unwrap(),
+            Err(Kept::NotComparable)
+        );
+        assert_eq!(
+            remove_if_identical(&src, &link, mtime).unwrap(),
+            Err(Kept::NotComparable)
+        );
+        assert!(link.exists() && src.exists());
     }
 }

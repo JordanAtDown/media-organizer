@@ -81,7 +81,7 @@ blocage qu'un watchdog NAS existe pour détecter.
 | `phase` / `current_folder` | où en est le scan (`inventory`, `planning`, `resolution`, `preparation`, `commit`, `idle`) |
 | `totals.by_date_source` | répartition `exif` / `quicktime` / `filename` / `mtime`. **Un pic de `mtime`** signifie que les fichiers entrants perdent leurs métadonnées en amont |
 | `pending_in_staging` | entrées préparées mais non publiées. **Non nul durablement = un commit échoue en boucle** |
-| `totals.duplicates` | doublons laissés en place, à arbitrer à la main |
+| `totals.duplicates` | doublons détectés (laissés en place, sauf `delete_source_duplicates`) |
 | `totals.panics` | un fichier a fait paniquer le code ; il est isolé, mais à investiguer |
 | `folders[].input_exists` | `false` = montage pas (encore) prêt |
 | `folders[].last_error` | dernière erreur de ce dossier |
