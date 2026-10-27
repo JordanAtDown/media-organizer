@@ -305,6 +305,32 @@ journalisé en `WARN` la première fois puis mémorisé (`state_dir/no_date_cach
 ignoré tant que son mtime ne change pas (ou après `no_date_cache.ttl_days`). Pour repartir
 de zéro : supprimer ce fichier.
 
+### Doublons
+
+Un doublon est un fichier dont le nom de destination est déjà pris par un fichier de même
+taille et de même empreinte BLAKE3. Par défaut il reste dans `input`, est journalisé une
+fois et mémorisé (`state_dir/duplicates.json`) : **rien n'est jamais supprimé**.
+
+Pour qu'il disparaisse (cas typique : un client de synchronisation qui renvoie un fichier
+déjà rangé), activez :
+
+```toml
+[dedup]
+delete_source_duplicates = true   # défaut : false
+```
+
+La source n'est alors supprimée (phase 5) qu'après une **relecture octet par octet, à cet
+instant, des deux fichiers**, sans se fier à l'empreinte mémorisée, et seulement si
+l'original est déjà dans la librairie :
+
+- un doublon au sein du même lot attend le scan suivant ;
+- au moindre doute (contenu différent, source modifiée depuis la planification, lien
+  symbolique, même inode, erreur de lecture), la source reste en place ;
+- `--dry-run` journalise `would remove` sans rien supprimer ;
+- l'option exige `dedup.enabled` et `dedup.check_existing` (tous deux vrais par défaut) ;
+- les doublons déjà mémorisés avant l'activation ne sont pas réexaminés : supprimez
+  `state_dir/duplicates.json` une fois.
+
 ### Niveau de log
 
 Priorité (la plus haute l'emporte) :
