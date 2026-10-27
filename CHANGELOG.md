@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.2.0] - 2026-10-27
+
 ### Added
 - `dedup.delete_source_duplicates` (default `false`): remove the source of a duplicate once
   it is proven byte-identical to the file already in the library. The check is a fresh
