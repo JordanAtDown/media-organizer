@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.3.0] - 2026-10-28
+
 ### Added
 - `[notify]` (disabled by default): announce the end of each folder's batch, so the
   infrastructure can rescan what changed (Nextcloud needs `occ files:scan`; the
@@ -39,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probe and the webhook share a small `http` module (still no dependency), and the
   journal, the caches and the event share `fsops::write_atomic`. Caches are now fsynced
   before the rename, like the journal already was.
+- `scripts/smoke-test.sh` enables `[notify]` and checks the announcement end to end: the
+  event file (content, mode, no leftover temporary), nothing for `--dry-run` or a kept
+  duplicate, and the last `seq` restored in `/healthz` after a restart.
 
 ---
 
