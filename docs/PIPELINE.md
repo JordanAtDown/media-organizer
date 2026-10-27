@@ -97,6 +97,19 @@ Un échec est journalisé et **le lot continue** : l'entrée reste dans le journ
 scan suivant. Pas de rollback global — un seul fichier corrompu ne doit jamais bloquer toute
 progression.
 
+## Après la phase 5 : l'annonce du lot
+
+Quand le pipeline d'un dossier est terminé, ce qu'il a changé est **annoncé** (module
+[`notify`](../src/notify/mod.rs), voir [DEPLOYMENT.md](DEPLOYMENT.md#annonce-de-fin-de-lot-notify)).
+Le scanner accumule, au fil des phases, les fichiers publiés (replay, commit) et les sources
+de doublons supprimées, et les remet au notifieur à la fin du dossier — à chaque scan, même
+sans rien de neuf. Le notifieur les **retient** (les uploads arrivent au fil de l'eau) et
+publie un seul événement quand l'input est resté calme `quiet_secs`, ou `max_wait_secs` après
+le premier fichier retenu. C'est la seule
+écriture hors des phases 4 et 5, et elle ne va **jamais** dans une librairie ni un input
+(`notify.dir` est validé hors de tous les deux). Elle n'existe pas en `--dry-run`, et son
+échec n'est qu'un `warn`.
+
 ## La chaîne de date
 
 Dans cet ordre exact ([src/date_reader.rs](../src/date_reader.rs)) :
@@ -154,8 +167,9 @@ Un nombre d'entrées « en attente » non nul de façon persistante (`pending_in
 | `no_date_cache.json` | fichiers qu'aucune source n'a pu dater (clé : chemin, invalidé si le mtime change) |
 | `duplicates.json` | sources connues pour dupliquer un fichier rangé |
 | `hash_index.json` | empreintes déjà calculées (clé : chemin, valide tant que taille et mtime sont inchangés) |
+| `notify.json` | par dossier : dernier événement annoncé (`seq`, date, compteurs) et changements **retenus** en attente d'annonce. **Pas un cache** : le perdre fait oublier ce qui était retenu (le `seq` repart du fichier d'événement) |
 
-Ce sont des caches : un fichier absent ou corrompu repart vide, sans empêcher le démarrage.
+Les trois premiers sont des caches : un fichier absent ou corrompu repart vide, sans empêcher le démarrage.
 
 ## Parallélisme
 

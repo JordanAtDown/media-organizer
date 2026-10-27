@@ -1,4 +1,5 @@
 use crate::config::HealthConfig;
+use crate::notify::LastEvent;
 use crate::scanner::{FolderSummary, Observer, Phase, ScanSummary};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -96,6 +97,15 @@ pub struct Caches {
     pub hash_index: usize,
 }
 
+/// A folder's last announced batch, and whether announcing it worked.
+#[derive(Debug, Clone, Serialize)]
+pub struct NotifyStatus {
+    #[serde(flatten)]
+    pub last: LastEvent,
+    /// What went wrong announcing that batch; cleared by the next one that works.
+    pub last_error: Option<String>,
+}
+
 #[derive(Default)]
 struct Inner {
     phase: Option<Phase>,
@@ -107,6 +117,8 @@ struct Inner {
     totals: Totals,
     caches: Caches,
     folders: Vec<FolderSummary>,
+    /// Per folder label; persists across scans (a quiet scan changes nothing).
+    notify: BTreeMap<String, NotifyStatus>,
 }
 
 /// Shared between the scan loop (writer) and the HTTP thread (reader).
@@ -133,6 +145,9 @@ pub struct Snapshot {
     pub totals: Totals,
     pub pending_in_staging: usize,
     pub caches: Caches,
+    /// Only present when `[notify]` is configured.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub notify: BTreeMap<String, NotifyStatus>,
     pub folders: Vec<FolderSummary>,
 }
 
@@ -187,6 +202,18 @@ impl HealthState {
                 *t.by_date_source.entry(source.clone()).or_default() += *n as u64;
             }
         }
+        for f in &summary.folders {
+            if let Some(a) = &f.announced {
+                let last_error = (!a.errors.is_empty()).then(|| a.errors.join("; "));
+                g.notify.insert(
+                    f.name.clone(),
+                    NotifyStatus {
+                        last: a.last.clone(),
+                        last_error,
+                    },
+                );
+            }
+        }
         g.scans_completed += 1;
         g.scan_finished = now;
         g.scan_duration_secs = now.saturating_sub(g.scan_started);
@@ -197,6 +224,19 @@ impl HealthState {
         self.last_progress.store(now, Ordering::Relaxed);
     }
 
+    /// Seed `/healthz` with the batches announced by earlier runs, so a restart
+    /// does not look like "nothing was ever announced". Never overrides what this
+    /// process has announced itself.
+    pub fn restore_notify(&self, previous: BTreeMap<String, LastEvent>) {
+        let mut g = self.lock();
+        for (folder, last) in previous {
+            g.notify.entry(folder).or_insert(NotifyStatus {
+                last,
+                last_error: None,
+            });
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot_at(unix_now())
     }
@@ -204,7 +244,9 @@ impl HealthState {
     pub fn snapshot_at(&self, now: u64) -> Snapshot {
         let g = self.lock();
         let pending: usize = g.folders.iter().map(|f| f.pending_in_staging).sum();
-        let degraded = pending > 0 || g.folders.iter().any(|f| !f.input_exists);
+        let degraded = pending > 0
+            || g.folders.iter().any(|f| !f.input_exists)
+            || g.notify.values().any(|n| n.last_error.is_some());
         let uptime = self.started.elapsed().map_or(0, |d| d.as_secs());
 
         let status = evaluate(Inputs {
@@ -234,6 +276,7 @@ impl HealthState {
             totals: g.totals.clone(),
             pending_in_staging: pending,
             caches: g.caches.clone(),
+            notify: g.notify.clone(),
             folders: g.folders.clone(),
         }
     }
@@ -395,6 +438,107 @@ mod tests {
         assert_eq!(s.current_folder.as_deref(), Some("phone"));
         h.phase("phone", Phase::Idle);
         assert_eq!(h.snapshot().current_folder, None);
+    }
+
+    fn announced(seq: u64, errors: &[&str]) -> crate::notify::Announced {
+        crate::notify::Announced {
+            event: crate::notify::BatchEvent {
+                folder: "p".into(),
+                seq,
+                finished_at: "2026-10-27T23:07:11+01:00".into(),
+                committed: 2,
+                deleted_sources: 1,
+                library_dirs: vec![],
+                input_dirs: vec![],
+            },
+            last: LastEvent {
+                seq,
+                finished_at: 1_792_687_600,
+                committed: 2,
+                deleted_sources: 1,
+            },
+            errors: errors.iter().map(|e| e.to_string()).collect(),
+        }
+    }
+
+    fn scan_announcing(a: Option<crate::notify::Announced>) -> ScanSummary {
+        let mut f = folder("p", 2, true, 0);
+        f.announced = a;
+        ScanSummary { folders: vec![f] }
+    }
+
+    #[test]
+    fn notify_is_absent_from_healthz_until_something_was_announced() {
+        let h = state();
+        h.record_scan(&scan_announcing(None), Caches::default());
+        let json = serde_json::to_value(h.snapshot()).unwrap();
+        assert!(json.get("notify").is_none());
+    }
+
+    #[test]
+    fn the_last_announcement_is_reported_per_folder_and_survives_quiet_scans() {
+        let h = state();
+        h.record_scan(&scan_announcing(Some(announced(7, &[]))), Caches::default());
+        h.record_scan(&scan_announcing(None), Caches::default());
+
+        let json = serde_json::to_value(h.snapshot()).unwrap();
+        let p = &json["notify"]["p"];
+        assert_eq!(p["seq"], 7);
+        assert_eq!(p["finished_at"], 1_792_687_600);
+        assert_eq!(
+            (p["committed"].as_u64(), p["deleted_sources"].as_u64()),
+            (Some(2), Some(1))
+        );
+        assert!(p["last_error"].is_null());
+        assert_eq!(h.snapshot().status, Status::Ok);
+    }
+
+    #[test]
+    fn a_failed_announcement_degrades_until_the_next_one_works() {
+        let h = state();
+        h.record_scan(
+            &scan_announcing(Some(announced(1, &["event file: boom", "webhook: down"]))),
+            Caches::default(),
+        );
+        let s = h.snapshot();
+        assert_eq!(s.status, Status::Degraded);
+        assert_eq!(
+            s.notify["p"].last_error.as_deref(),
+            Some("event file: boom; webhook: down")
+        );
+
+        h.record_scan(&scan_announcing(Some(announced(2, &[]))), Caches::default());
+        let s = h.snapshot();
+        assert_eq!(s.status, Status::Ok);
+        assert_eq!(s.notify["p"].last.seq, 2);
+        assert_eq!(s.notify["p"].last_error, None);
+    }
+
+    #[test]
+    fn restored_events_seed_healthz_without_overriding_this_run() {
+        let h = state();
+        let old = |seq| LastEvent {
+            seq,
+            finished_at: 1,
+            committed: 1,
+            deleted_sources: 0,
+        };
+        h.restore_notify([("p".to_string(), old(41)), ("q".to_string(), old(5))].into());
+        assert_eq!(h.snapshot().notify["p"].last.seq, 41);
+        assert_eq!(
+            h.snapshot().status,
+            Status::Starting,
+            "a restore is not activity"
+        );
+
+        h.record_scan(
+            &scan_announcing(Some(announced(42, &[]))),
+            Caches::default(),
+        );
+        h.restore_notify([("p".to_string(), old(41))].into());
+        let s = h.snapshot();
+        assert_eq!(s.notify["p"].last.seq, 42);
+        assert_eq!(s.notify["q"].last.seq, 5);
     }
 
     #[test]

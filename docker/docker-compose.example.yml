@@ -40,6 +40,10 @@ services:
 
       # Pour déboguer la zone de travail, la rendre visible (facultatif) :
       # - ./work:/var/lib/media-organizer/work
+    # Facultatif, pour [notify] webhook_url : joindre l'hôte (un service sur le Pi) depuis le
+    # conteneur. Le fichier d'événement, lui, est déjà lisible côté hôte dans ./state/events.
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     ports:
       # /healthz et /livez, limités à la machine (Gatus, healthcheck local…).
       - "127.0.0.1:8080:8080"

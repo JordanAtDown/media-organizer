@@ -12,6 +12,7 @@ pub mod http;
 pub mod logtime;
 pub mod metadata;
 pub mod naming;
+pub mod notify;
 pub mod plan;
 pub mod resolve;
 pub mod scanner;

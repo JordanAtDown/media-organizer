@@ -36,6 +36,10 @@ métier éprouvée, architecture refaite pour le Pi.
   coup dans la librairie. Une coupure en cours de route se rattrape au scan suivant
   (journal de reprise).
 - Conflits de nom entre fichiers différents : `rename`, `skip` ou `overwrite`.
+- **Annonce de fin de lot** (facultatif, `[notify]`) : un événement JSON par dossier — fichier
+  atomique et/ou webhook —, pour que l'infrastructure relance un `occ files:scan` ciblé au
+  lieu de deviner la fin d'un lot en observant les écritures. Les uploads progressifs sont
+  regroupés : l'annonce attend que l'input soit calme.
 - Logs JSON sur stdout, arrêt propre sur SIGTERM, `/healthz` pour la supervision.
 
 ## Architecture
@@ -52,7 +56,8 @@ toutes les poll_interval_secs (30 s)
 ```
 
 **La librairie n'est pas touchée avant la phase 5**, et un fichier n'y apparaît sous son vrai
-nom qu'une fois complet. Détails et invariants : [docs/PIPELINE.md](docs/PIPELINE.md).
+nom qu'une fois complet. Détails et invariants : [docs/PIPELINE.md](docs/PIPELINE.md). Le lot
+terminé peut ensuite être annoncé (voir [Annonce de fin de lot](#annonce-de-fin-de-lot)).
 
 ---
 
@@ -331,6 +336,44 @@ l'original est déjà dans la librairie :
 - les doublons déjà mémorisés avant l'activation ne sont pas réexaminés : supprimez
   `state_dir/duplicates.json` une fois.
 
+### Annonce de fin de lot
+
+Nextcloud ne voit pas les écritures de media-organizer : il lui faut un `occ files:scan` pour
+les indexer. Le conteneur n'a ni Docker ni `occ`, il ne le lance donc pas : il **annonce** la
+fin de chaque lot, et l'infrastructure réagit. Désactivé par défaut.
+
+```toml
+[notify]
+dir = "/var/lib/media-organizer/events"                    # un fichier <dossier>.json, durable
+# webhook_url = "http://host.docker.internal:8123/batch"   # en plus : POST du même JSON
+# quiet_secs = 60       # annonce quand l'input est resté calme 60 s…
+# max_wait_secs = 600   # …mais jamais plus de 10 min après le premier fichier retenu
+```
+
+```json
+{"folder":"jordan","seq":42,"finished_at":"2026-10-27T23:07:11+01:00",
+ "committed":12,"deleted_sources":3,"library_dirs":["2026/10"],"input_dirs":["."]}
+```
+
+- **un événement par dossier**, si au moins un fichier a été publié ou une source supprimée de
+  l'input ; rien en `--dry-run` ni pour un lot sans effet ;
+- **les uploads progressifs sont regroupés** : les fichiers sont rangés dès qu'ils arrivent,
+  mais l'annonce est retenue jusqu'à ce que l'input soit resté calme `quiet_secs` (60 s), sans
+  jamais dépasser `max_wait_secs` (10 min) pour qu'un flux continu ne la repousse pas
+  indéfiniment. Ce qui est retenu survit à un redémarrage ;
+- le fichier est écrit **atomiquement** (jamais tronqué) et écrasé à chaque lot ; `seq` croît à
+  chaque lot et survit aux redémarrages, un trou signale un événement manqué ;
+- les chemins sont **relatifs** à la librairie et à l'input, pour un scan ciblé ;
+- un échec d'écriture ou de webhook est un `warn` (et `degraded` dans `/healthz`) : il ne fait
+  **jamais** échouer le lot ;
+- le webhook est en `http://` seulement, sans nouvelle tentative, et le récepteur doit répondre
+  `2xx` tout de suite (l'envoi est synchrone) : le fichier est le chemin durable (par exemple
+  une unité systemd `.path`), le webhook un complément. Règles côté récepteur dans
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#écrire-un-récepteur).
+
+Contrat complet, règles pour le consommateur et exemple systemd :
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#annonce-de-fin-de-lot-notify).
+
 ### Niveau de log
 
 Priorité (la plus haute l'emporte) :
@@ -400,7 +443,8 @@ Le lecteur ne parcourt que `moov → mvhd` et ignore le reste : les parseurs d'a
 
 `GET /healthz` (JSON, **503 si plus aucun progrès** — typiquement un montage NFS figé) et
 `GET /livez` (200 tant que le processus répond). Format et règles :
-[docs/HEALTHZ.md](docs/HEALTHZ.md).
+[docs/HEALTHZ.md](docs/HEALTHZ.md). Avec `[notify]`, `/healthz` donne aussi le dernier `seq` et
+la date du dernier lot annoncé, par dossier.
 
 ## Développement
 

@@ -242,3 +242,133 @@ fn the_recover_subcommand_finishes_an_interrupted_batch() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("3 committed, 0 still pending"));
     assert_eq!(files_under(env.output.path()).len(), 3);
 }
+
+// -- announcing what a replay publishes ---------------------------------------
+
+fn notify_into(env: &Env) -> String {
+    format!(
+        "[notify]\ndir = \"{}\"\nquiet_secs = 0\nmax_wait_secs = 0\n",
+        env.state.path().join("events").display()
+    )
+}
+
+fn event(env: &Env) -> media_organizer::notify::BatchEvent {
+    let raw = std::fs::read(env.state.path().join("events/t.json")).expect("no event file");
+    serde_json::from_slice(&raw).unwrap()
+}
+
+#[test]
+fn a_replayed_batch_is_announced() {
+    let env = Env::new();
+    mixed_batch(&env);
+    let cfg = env.config(&notify_into(&env), "");
+    crash_before_commit(&env, &cfg);
+
+    let mut scanner = env.scanner_with(cfg, false);
+    let sum = env.scan(&mut scanner);
+
+    assert_eq!(sum.organized, 3);
+    let e = event(&env);
+    assert_eq!((e.seq, e.committed), (1, 3));
+    assert_eq!(e.library_dirs, ["2023/03", "2024/01", "2025/06"]);
+    assert_eq!(e.input_dirs, ["."]);
+}
+
+#[test]
+fn a_file_published_just_before_a_crash_is_still_announced() {
+    let env = Env::new();
+    mixed_batch(&env);
+    let cfg = env.config(&notify_into(&env), "");
+    crash_before_commit(&env, &cfg);
+
+    // What phase 5 did for the video before the run died, ahead of rewriting the
+    // journal: published under its name, source removed, journal line still there.
+    let staging = Staging::new(
+        cfg.folders[0].work_subdir(&cfg.work_root(env.state.path())),
+        cfg.folders[0].library.clone(),
+        None,
+        None,
+    )
+    .unwrap();
+    let published = staging
+        .read_journal()
+        .into_iter()
+        .find(|e| e.source.extension().is_some_and(|x| x == "mp4"))
+        .unwrap();
+    std::fs::create_dir_all(published.final_dest.parent().unwrap()).unwrap();
+    std::fs::rename(&published.staged, &published.final_dest).unwrap();
+    std::fs::remove_file(&published.source).unwrap();
+
+    let mut scanner = env.scanner_with(cfg, false);
+    let sum = env.scan(&mut scanner);
+
+    assert_eq!(sum.organized, 2, "the video was already done");
+    let e = event(&env);
+    assert_eq!(e.committed, 3, "the interrupted batch is announced whole");
+    assert_eq!(e.library_dirs, ["2023/03", "2024/01", "2025/06"]);
+}
+
+#[test]
+fn a_vanished_staged_file_whose_source_remains_is_counted_once() {
+    let env = Env::new();
+    mixed_batch(&env);
+    let cfg = env.config(&notify_into(&env), "");
+    crash_before_commit(&env, &cfg);
+    // Staged file lost, source untouched: it was never published and is organized
+    // afresh by this scan, so it must not also count as an earlier publication.
+    let victim = std::fs::read_dir(staging_dir(&env))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "mp4"))
+        .unwrap();
+    std::fs::remove_file(victim).unwrap();
+
+    let mut scanner = env.scanner_with(cfg, false);
+    env.scan(&mut scanner);
+
+    assert_eq!(event(&env).committed, 3);
+}
+
+#[test]
+fn the_recover_subcommand_announces_what_it_publishes() {
+    let env = Env::new();
+    mixed_batch(&env);
+    let cfg = env.config("", "");
+    crash_before_commit(&env, &cfg);
+
+    let cfg_file = env.state.path().join("config.toml");
+    std::fs::write(
+        &cfg_file,
+        format!(
+            "{}[[folders]]\nname = \"t\"\ninput = \"{}\"\nlibrary = \"{}\"\npattern = \"{{year}}/{{month}}/{{stem}}{{ext}}\"\n",
+            // `[notify]` first: a table header takes every key after it.
+            notify_into(&env),
+            env.input.path().display(),
+            env.output.path().display()
+        ),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_media-organizer"))
+        .args([
+            "--config",
+            cfg_file.to_str().unwrap(),
+            "--state-dir",
+            env.state.path().to_str().unwrap(),
+            "--health-bind",
+            "",
+            "recover",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let e = event(&env);
+    assert_eq!((e.seq, e.committed), (1, 3));
+    assert_eq!(e.library_dirs, ["2023/03", "2024/01", "2025/06"]);
+}

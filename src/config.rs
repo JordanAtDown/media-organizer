@@ -1,4 +1,5 @@
 use crate::error::ConfigError;
+use crate::http;
 use crate::naming;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
@@ -122,6 +123,14 @@ fn default_stale_intervals() -> u64 {
     3
 }
 
+fn default_notify_quiet_secs() -> u64 {
+    60
+}
+
+fn default_notify_max_wait_secs() -> u64 {
+    600
+}
+
 /// Global default modes; a folder may override either one.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -218,6 +227,50 @@ impl Default for HealthConfig {
     }
 }
 
+/// Where a finished batch is announced. Both sinks are optional and independent;
+/// with neither, the feature is off and nothing is written. An empty string counts
+/// as absent, like `health.bind`: the file is templated.
+///
+/// Files that arrive by upload trickle in and are organized as they come, so one
+/// scan's batch is rarely the whole upload. The announcement therefore waits for
+/// the input to go quiet (`quiet_secs`), but never longer than `max_wait_secs`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyConfig {
+    /// Absolute directory receiving `<folder>.json`, overwritten at each event.
+    pub dir: Option<PathBuf>,
+    /// `http://` URL receiving the same JSON in a `POST`.
+    pub webhook_url: Option<String>,
+    /// Announce once nothing was organized for this long; 0 = after every batch.
+    #[serde(default = "default_notify_quiet_secs")]
+    pub quiet_secs: u64,
+    /// Never hold an announcement longer than this, however busy the input is.
+    #[serde(default = "default_notify_max_wait_secs")]
+    pub max_wait_secs: u64,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            webhook_url: None,
+            quiet_secs: default_notify_quiet_secs(),
+            max_wait_secs: default_notify_max_wait_secs(),
+        }
+    }
+}
+
+impl NotifyConfig {
+    pub fn enabled(&self) -> bool {
+        self.dir.is_some() || self.webhook_url.is_some()
+    }
+
+    fn normalize(&mut self) {
+        self.dir = self.dir.take().filter(|d| !d.as_os_str().is_empty());
+        self.webhook_url = self.webhook_url.take().filter(|u| !u.trim().is_empty());
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FolderConfig {
@@ -274,9 +327,15 @@ impl FolderConfig {
         })
     }
 
+    /// The label as a safe file name: the work area's directory, and the file
+    /// name of the folder's batch event.
+    pub fn slug(&self) -> String {
+        sanitize_label(&self.label())
+    }
+
     /// This folder's private work area (staging and journal) under `work_root`.
     pub fn work_subdir(&self, work_root: &Path) -> PathBuf {
-        work_root.join(sanitize_label(&self.label()))
+        work_root.join(self.slug())
     }
 
     pub fn file_mode(&self, global: &Permissions) -> Option<Mode> {
@@ -323,6 +382,8 @@ pub struct Config {
     pub no_date_cache: CacheConfig,
     #[serde(default)]
     pub health: HealthConfig,
+    #[serde(default)]
+    pub notify: NotifyConfig,
 }
 
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
@@ -331,6 +392,7 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 
 pub fn parse(content: &str) -> Result<Config, ConfigError> {
     let mut config: Config = toml::from_str(content)?;
+    config.notify.normalize();
     resolve_names(&mut config)?;
     validate(&config)?;
     Ok(config)
@@ -436,12 +498,50 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     for folder in &config.folders {
         validate_folder(folder)?;
         // Each folder gets its own work area named after its label.
-        if !seen.insert(sanitize_label(&folder.label())) {
+        if !seen.insert(folder.slug()) {
             return invalid(format!(
                 "two folders share the label '{}': give each a distinct `name`",
                 folder.label()
             ));
         }
+    }
+    validate_notify(config)
+}
+
+fn validate_notify(config: &Config) -> Result<(), ConfigError> {
+    let notify = &config.notify;
+    if notify.max_wait_secs < notify.quiet_secs {
+        return invalid(format!(
+            "notify.max_wait_secs ({}) must be >= notify.quiet_secs ({}): an announcement \
+             cannot be held for less time than the quiet period it waits for",
+            notify.max_wait_secs, notify.quiet_secs
+        ));
+    }
+    if let Some(dir) = &notify.dir {
+        if !dir.is_absolute() {
+            return invalid(format!(
+                "notify.dir must be an absolute path, got '{}'",
+                dir.display()
+            ));
+        }
+        // An event inside a tree that is scanned would be walked like any file, and
+        // one inside a library would be seen by Immich and Nextcloud.
+        for folder in &config.folders {
+            for (what, root) in [("input", &folder.input), ("library", &folder.library)] {
+                if dir.starts_with(root) {
+                    return invalid(format!(
+                        "notify.dir {} is inside the {what} of '{}' ({})",
+                        dir.display(),
+                        folder.label(),
+                        root.display()
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(url) = &notify.webhook_url {
+        http::Url::parse(url)
+            .map_err(|e| ConfigError::Invalid(format!("notify.webhook_url: {e}")))?;
     }
     Ok(())
 }
@@ -708,6 +808,103 @@ library = "/out"
         assert_eq!(sanitize_label("a/b"), "a_b");
         assert_eq!(sanitize_label(".."), "folder");
         assert_eq!(sanitize_label(""), "folder");
+    }
+
+    #[test]
+    fn notify_is_off_by_default() {
+        let cfg = parse(MINIMAL).unwrap();
+        assert_eq!(cfg.notify, NotifyConfig::default());
+        assert!(!cfg.notify.enabled());
+    }
+
+    #[test]
+    fn notify_sinks_parse_independently() {
+        let dir = parse(&with_folder("[notify]\ndir = \"/state/events\"")).unwrap();
+        assert_eq!(dir.notify.dir, Some(PathBuf::from("/state/events")));
+        assert_eq!(dir.notify.webhook_url, None);
+        assert!(dir.notify.enabled());
+
+        let hook = parse(&with_folder(
+            "[notify]\nwebhook_url = \"http://host.docker.internal:8123/batch\"",
+        ))
+        .unwrap();
+        assert_eq!(hook.notify.dir, None);
+        assert!(hook.notify.enabled());
+    }
+
+    #[test]
+    fn notify_debounce_defaults_to_a_minute_of_quiet_capped_at_ten() {
+        let cfg = parse(&with_folder("[notify]\ndir = \"/state/events\"")).unwrap();
+        assert_eq!((cfg.notify.quiet_secs, cfg.notify.max_wait_secs), (60, 600));
+    }
+
+    #[test]
+    fn notify_debounce_is_configurable_and_zero_means_immediate() {
+        let cfg = parse(&with_folder(
+            "[notify]\ndir = \"/e\"\nquiet_secs = 0\nmax_wait_secs = 0",
+        ))
+        .unwrap();
+        assert_eq!((cfg.notify.quiet_secs, cfg.notify.max_wait_secs), (0, 0));
+        let cfg = parse(&with_folder(
+            "[notify]\ndir = \"/e\"\nquiet_secs = 120\nmax_wait_secs = 1800",
+        ))
+        .unwrap();
+        assert_eq!(
+            (cfg.notify.quiet_secs, cfg.notify.max_wait_secs),
+            (120, 1800)
+        );
+    }
+
+    #[test]
+    fn a_cap_below_the_quiet_period_is_rejected() {
+        let err = parse(&with_folder(
+            "[notify]\ndir = \"/e\"\nquiet_secs = 900\nmax_wait_secs = 600",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("max_wait_secs"), "{err}");
+        // Even when only the quiet period is raised past the default cap.
+        assert!(parse(&with_folder("[notify]\ndir = \"/e\"\nquiet_secs = 900")).is_err());
+    }
+
+    #[test]
+    fn empty_notify_values_mean_disabled() {
+        let cfg = parse(&with_folder("[notify]\ndir = \"\"\nwebhook_url = \"\"")).unwrap();
+        assert_eq!(cfg.notify, NotifyConfig::default());
+    }
+
+    #[rstest]
+    #[case("dir = \"events\"")]
+    #[case("dir = \"./events\"")]
+    #[case("dir = \"/in/events\"")] // inside the input
+    #[case("dir = \"/out\"")] // the library itself
+    #[case("dir = \"/out/2026/events\"")] // inside the library
+    #[case("webhook_url = \"https://host/batch\"")]
+    #[case("webhook_url = \"host:8123/batch\"")]
+    #[case("webhook_url = \"http://user:pw@host/batch\"")]
+    #[case("webhook_url = \"http://host:99999/batch\"")]
+    #[case("directory = \"/state/events\"")] // unknown key
+    fn bad_notify_settings_are_rejected(#[case] line: &str) {
+        assert!(
+            parse(&with_folder(&format!("[notify]\n{line}"))).is_err(),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_bad_webhook_says_why() {
+        let err = parse(&with_folder("[notify]\nwebhook_url = \"https://h/x\""))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("notify.webhook_url"), "{err}");
+        assert!(err.contains("https is not supported"), "{err}");
+    }
+
+    #[test]
+    fn the_event_file_name_is_the_sanitized_label() {
+        let cfg =
+            parse("[[folders]]\nname = \"Sony Alpha 7\"\ninput = \"a\"\nlibrary = \"b\"").unwrap();
+        assert_eq!(cfg.folders[0].slug(), "Sony_Alpha_7");
     }
 
     #[test]

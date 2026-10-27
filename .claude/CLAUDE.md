@@ -42,6 +42,20 @@ refaites pas cette erreur.
 11. **`TZ` est fonctionnel.** Toutes les dates sont des `DateTime<Local>` ; sans `tzdata`/`TZ`
     elles deviennent UTC et les fichiers changent de dossier. Les tests comparent en `Utc`.
 
+12. **L'annonce de lot est la seule écriture hors phases 4/5, et elle doit rester inoffensive.**
+    Elle va dans `notify.dir` (validé hors de tout input et de toute librairie), après la
+    phase 5, jamais en `--dry-run`, et son échec est un `warn` — **jamais** un lot raté.
+    **Elle est débouncée, jamais le rangement** : les uploads arrivent au fil de l'eau, donc
+    l'annonce est retenue (cumul persisté dans `notify.json`) jusqu'à `quiet_secs` de calme,
+    plafonnée par `max_wait_secs` — sans plafond, un flux continu la repousserait
+    indéfiniment. Le notifieur est consulté à **chaque** scan, même vide, sinon le délai ne
+    s'écoule jamais ; l'horloge y est injectée (`now`), pas de `sleep` dans les tests. Le
+    `seq` est écrit dans `notify.json` *avant* la publication (un crash laisse un trou, jamais
+    une réutilisation). Le temporaire de l'événement vit dans `<dir>/.tmp/`, **pas** dans
+    `<dir>` : un `.path` systemd se réveillerait à sa création, avant que le JSON soit
+    complet. Une annonce n'omet jamais un dossier touché (en lister un de trop est sans
+    conséquence). Voir [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
+
 ## Pièges NAS à ne surtout pas « simplifier »
 
 Le NAS n'exécute plus rien, mais il reste le **magasin de données** (volume DSM exporté en
@@ -86,6 +100,9 @@ NFS) :
 - **Pas de tag `latest`** : l'infrastructure épingle toujours une version exacte.
 - Le rôle Ansible et tout le dépôt d'infrastructure sont hors périmètre ici.
 - Pas de suppression automatique des doublons, pas de rétro-déduplication de l'existant.
+- **Pas de client HTTP externe ni de TLS** : `src/http.rs` (~200 lignes, `http://` seulement, un délai global par échange)
+  sert la sonde `healthcheck` et le webhook. Un vrai besoin de HTTPS justifierait `ureq`, qui
+  remplacerait alors tout `http.rs` ; avant cela, ne pas ajouter de dépendance.
 
 ## Commandes utiles
 

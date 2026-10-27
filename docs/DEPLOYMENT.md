@@ -30,7 +30,7 @@ Trois catégories de dossiers, déclarées **une par une** (voir le README) :
 | Montage | Mode | Contenu |
 | --- | --- | --- |
 | `/etc/media-organizer/config.toml` | `ro` | configuration (templatable : clés inconnues = erreur) |
-| `/var/lib/media-organizer` | `rw` | caches persistants **et zone de travail** (`work/`). Volume distinct de la configuration |
+| `/var/lib/media-organizer` | `rw` | caches persistants **et zone de travail** (`work/`), et avec `[notify]` le compteur `notify.json` et le dossier d'événements (`events/`, lisible côté hôte). Volume distinct de la configuration |
 | `/inputs/<nom>` | `rw` | un dossier **source** (synchronisation), un volume par dossier |
 | `/libraries/<nom>` | `rw` | un dossier qui **accueille une librairie**, un volume par dossier |
 
@@ -86,6 +86,192 @@ Port `8080` (`health.bind`). Voir [HEALTHZ.md](HEALTHZ.md) pour le détail.
   `docker-compose` (`dev.dozzle.icon: <nom dashboard-icons>` ou data URI) ; `none` le masque.
 - Le conteneur monte des bind-mounts NFS : il a sa place dans la liste des conteneurs
   qu'un watchdog doit relancer quand le montage revient.
+
+## Annonce de fin de lot (`[notify]`)
+
+Nextcloud ne voit pas les écritures de media-organizer : un `occ files:scan` est nécessaire.
+Le conteneur n'a ni Docker ni `occ` et reste indépendant de Nextcloud : il **annonce** la fin
+d'un lot, et c'est à l'infrastructure de réagir. **Désactivé par défaut** : sans
+`[notify]`, rien n'est écrit et rien ne change pour les autres déploiements.
+
+```toml
+[notify]
+dir = "/var/lib/media-organizer/events"                    # fichier d'événement (durable)
+# webhook_url = "http://host.docker.internal:8123/batch"   # en plus, facultatif
+# quiet_secs = 60       # annonce quand l'input est resté calme 60 s…
+# max_wait_secs = 600   # …mais jamais plus de 10 min après le premier fichier retenu
+```
+
+### Quand un événement est publié
+
+Pour chaque **dossier**, quand ce qu'un scan a rangé a été **retenu** puis que l'input est
+resté calme (voir ci-dessous). Il faut qu'au moins un fichier ait été publié dans la
+librairie ou une source supprimée de l'input. Jamais :
+
+- en `--dry-run` ;
+- pour un lot qui ne change rien (doublons conservés, fichiers en erreur, rien de neuf).
+
+La sous-commande `recover` et le rejeu d'un journal au démarrage annoncent aussi ce qu'ils
+publient, y compris un fichier publié juste avant une coupure (`recover` publie
+immédiatement : il s'arrête ensuite et aucun scan ne viendrait vider ce qui serait retenu).
+
+**Pourquoi attendre : les uploads arrivent au fil de l'eau.** Le dossier d'entrée est
+alimenté par des uploads dont les fichiers n'apparaissent pas ensemble ; media-organizer les
+range dès qu'ils sont stables (`stability_secs`), donc le lot d'un scan est rarement tout
+l'upload. Annoncer chaque scan ferait relancer un `files:scan` toutes les 30 secondes. Seule
+**l'annonce** attend : le rangement, lui, n'est jamais retardé. Ce qui a changé est retenu et
+cumulé (les fichiers, mais aussi les dossiers touchés), puis publié en **un seul événement**
+dès que :
+
+- plus aucun fichier n'a été rangé depuis `quiet_secs` (défaut **60 s**, compté depuis le
+  *dernier* fichier), ou
+- `max_wait_secs` (défaut **600 s**) se sont écoulées depuis le *premier* fichier retenu.
+
+Le plafond est ce qui évite le défaut d'un débounce naïf, un flux continu qui repousse
+l'annonce indéfiniment : même sous un flux ininterrompu, un événement part au plus toutes les
+`max_wait_secs`. `quiet_secs = 0` annonce après chaque lot, sans attendre. La décision est
+prise à chaque scan : le délai réel est arrondi au `poll_interval_secs` supérieur.
+
+Ce qui est retenu est **persisté** (`state_dir/notify.json`) : un redémarrage ne l'oublie pas
+et l'annonce part au premier scan où elle est due. Tant qu'elle est retenue, `seq` ne bouge
+pas et `/healthz` ne change pas. Un grand arriéré est borné par `staging.max_batch` : chaque
+scan en range une part, et le tout est annoncé d'un bloc une fois l'input calme (ou au
+plafond).
+
+### Le fichier
+
+`<dir>/<nom du dossier>.json` (le nom est le `name` du `[[folders]]`, assaini), écrasé à
+chaque lot :
+
+```json
+{"folder":"jordan","seq":42,"finished_at":"2026-10-27T23:07:11+01:00",
+ "committed":12,"deleted_sources":3,"library_dirs":["2026/10"],"input_dirs":["."]}
+```
+
+| Champ | Sens |
+| --- | --- |
+| `seq` | croît de 1 à chaque lot **de ce dossier**, et survit aux redémarrages (`state_dir/notify.json`). Un trou ou un retour en arrière = un événement manqué |
+| `finished_at` | RFC 3339, heure locale (`TZ`), à la seconde : le moment de la publication |
+| `committed` | fichiers publiés dans la librairie **depuis l'événement précédent** (tous les lots que l'annonce a traversés) |
+| `deleted_sources` | sources de doublons supprimées de l'input (`dedup.delete_source_duplicates`), idem |
+| `library_dirs` | dossiers de la librairie touchés, **relatifs à sa racine** (`"."` = la racine) |
+| `input_dirs` | dossiers de l'input d'où des fichiers ont disparu, **relatifs à l'input**. Tout fichier commité quitte aussi l'input : ils y figurent, avec les doublons supprimés (`committed` ne compte pas les secondes) |
+
+Les chemins sont triés et sans doublon, pour viser un scan restreint
+(`…/phototeque/2026/10`) plutôt que toute la librairie. Lister un dossier de trop est sans
+conséquence (un scan est idempotent) ; en omettre un serait un bug. Un chemin qui ne peut
+pas s'exprimer relativement devient `"."`.
+
+**Lecture concurrente sûre.** Le JSON est écrit dans `<dir>/.tmp/`, synchronisé sur disque,
+puis déplacé par `rename` : un lecteur voit l'ancien fichier ou le nouveau complet, jamais un
+fichier tronqué. Le temporaire n'est volontairement **pas** dans `<dir>` : un `.path` systemd
+qui surveille ce dossier ne se déclenche qu'au `rename`, une seule fois, contenu complet. Le
+fichier est en `0644`.
+
+**Règles pour le consommateur.** L'événement suivant écrase le précédent : si deux lots
+arrivent avant une lecture, les `library_dirs` du premier sont perdus.
+
+1. mémoriser le dernier `seq` traité, par dossier ;
+2. `seq == dernier + 1` : rien de manqué, scanner `library_dirs` et `input_dirs` ;
+3. `seq > dernier + 1` (trou) ou `seq < dernier` (compteur perdu) : **scanner tout le
+   dossier** ;
+4. relire les événements jusqu'à ce qu'aucun `seq` ne change, au cas où un lot arrive
+   pendant le scan.
+
+Une annonce peut se perdre dans une fenêtre très étroite : un arrêt brutal (`kill -9`,
+coupure) entre le moment où l'annonce part et l'écriture de l'événement ; le `seq` est alors
+consommé et le consommateur voit le trou. Ce qui est *retenu* ne se perd pas (il est
+persisté). Un scan complet périodique côté infrastructure sert de filet.
+
+### Un déclencheur systemd, sans démon
+
+Le fichier suffit à remplacer un `inotifywait` : le déclencheur est durable même si le
+consommateur est arrêté un moment, sans port ouvert ni processus à superviser. Exemple
+indicatif (le dossier hôte est celui du volume d'état, `./state/events`) :
+
+```ini
+# /etc/systemd/system/mo-nextcloud-scan.path
+[Path]
+PathChanged=/srv/media-organizer/state/events
+Unit=mo-nextcloud-scan.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/mo-nextcloud-scan.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mo-nextcloud-scan   # applique les règles ci-dessus, puis occ files:scan
+```
+
+Le lien dossier → chemin Nextcloud (`<email>/files/photos/<dossier>` pour la librairie,
+`<email>/files/synchronisation/…` pour l'input) appartient à l'infrastructure. À valider
+côté Nextcloud : un `files:scan --path` sur un dossier **nouveau** (le premier fichier d'un
+nouveau mois) l'indexe-t-il bien, ou faut-il remonter au parent ?
+
+### Le webhook
+
+`webhook_url` envoie le **même JSON** en `POST` (`Content-Type: application/json`). Limites
+assumées :
+
+- **`http://` uniquement** : l'image n'embarque pas de pile TLS (et `https://` est refusé à la
+  validation de la configuration). Depuis le conteneur, l'hôte s'atteint avec
+  `extra_hosts: ["host.docker.internal:host-gateway"]` ;
+- **un seul essai**, sans nouvelle tentative : un récepteur arrêté **perd l'événement**. Le
+  fichier est le chemin durable, le webhook un complément ;
+- **l'envoi est synchrone** : media-organizer attend la réponse avant de poursuivre son scan.
+  Tout l'échange (résolution du nom, connexion, envoi, lecture de la réponse) est borné à
+  **5 secondes au total**. Un récepteur arrêté répond aussitôt par un refus de connexion ; un
+  hôte injoignable, un DNS muet ou un récepteur qui répond au compte-gouttes coûtent 5 s au
+  plus, une fois par événement et par dossier (et les événements sont espacés d'au moins
+  `quiet_secs`) ;
+- tout code `2xx` vaut livraison ; le corps de la réponse est ignoré.
+
+### Écrire un récepteur
+
+La requête est un `POST` sur le chemin de `webhook_url`, avec `Content-Type: application/json`
+et `User-Agent: media-organizer/<version>`. Le corps est **le même JSON que le fichier**
+(schéma ci-dessus), sur une seule ligne. Ce que doit faire le récepteur :
+
+1. **Répondre `2xx` tout de suite** (`204` convient), sans attendre la fin du traitement.
+   media-organizer est bloqué tant qu'il n'a pas la réponse, et sans réponse complète en 5 s
+   au total l'événement est compté en échec (`degraded` dans `/healthz`) même si le récepteur l'a bien
+   reçu. Un `files:scan` long se lance **après** la réponse : mettre l'événement en file ou
+   démarrer un traitement séparé.
+2. **Ne pas compter sur la livraison.** Il n'y a ni nouvelle tentative ni accusé persistant.
+   Appliquer les mêmes règles que pour le fichier : mémoriser le dernier `seq` par `folder` ;
+   `seq == dernier + 1`, scanner `library_dirs` et `input_dirs` ; **trou** (`seq > dernier + 1`)
+   **ou retour en arrière** (`seq < dernier`, compteur perdu), scanner tout le dossier.
+   À la différence du fichier, chaque événement est livré séparément, rien n'est écrasé : si le
+   récepteur est joignable, les `library_dirs` de chaque événement lui parviennent.
+3. **Traiter les événements un par un, dans l'ordre d'arrivée.** L'envoi étant synchrone, deux
+   événements d'un même dossier ne se chevauchent jamais, et ceux de dossiers différents
+   arrivent l'un après l'autre.
+4. **Tolérer un événement vu deux fois** : relancer un scan sur les mêmes dossiers est sans
+   effet de bord.
+5. **Rester sur un réseau de confiance.** Il n'y a ni authentification, ni secret, ni signature,
+   et `https://` n'est pas disponible : quiconque joint l'URL peut forger un événement. L'effet
+   se limite à déclencher un scan, mais n'exposez pas le récepteur au-delà de l'hôte (écoutez
+   sur la boucle locale ou sur l'interface du pont Docker, pas sur `0.0.0.0` côté réseau).
+
+Une absence d'événement n'est pas une panne : rien n'est envoyé quand rien n'a été rangé, ni
+tant qu'une annonce est retenue par le débounce (`quiet_secs`).
+
+### Erreurs et supervision
+
+Dossier absent, non inscriptible, récepteur injoignable : le lot se déroule normalement et un
+`warn` est journalisé (`cannot announce the batch`, avec `sink` = `event file` ou
+`webhook`). Un dossier manquant est créé ; un `dir` inscriptible est vérifié au démarrage
+(`warn` si non). Les deux sorties sont indépendantes : l'une qui échoue n'empêche pas
+l'autre. Le `seq` est consommé même en cas d'échec : le consommateur verra le trou.
+
+[`/healthz`](HEALTHZ.md) expose, par dossier, le dernier `seq`, sa date et `last_error`, et
+passe en `degraded` tant que la dernière annonce a échoué. **Attention à Gatus :** « un lot
+a été annoncé récemment » alerterait à tort les jours sans photo (et, avec le débounce, un
+événement ne suit le dernier fichier que d'au moins `quiet_secs`). Les signaux utiles sont
+`last_error` nul, et côté consommateur le `seq` traité comparé à celui de `/healthz`.
 
 ## Première mise en service
 

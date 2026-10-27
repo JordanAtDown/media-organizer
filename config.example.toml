@@ -108,6 +108,49 @@ startup_grace_secs = 120
 # `stale` après poll_interval_secs × stale_intervals sans progrès (plancher : 60 s).
 stale_intervals = 3
 
+# ── Annonce de fin de lot ─────────────────────────────────────────────────────────
+# Nextcloud ne voit pas les écritures de media-organizer : il lui faut un
+# `occ files:scan` pour les indexer. media-organizer ne le lance PAS (le conteneur n'a ni
+# Docker ni occ, et reste indépendant de Nextcloud) : il ANNONCE la fin de chaque lot, et
+# l'infrastructure réagit. Désactivé par défaut : sans clé, rien n'est écrit.
+#
+# Un événement est publié par dossier, après le commit, si au moins un fichier a été
+# publié dans la librairie ou une source supprimée de l'input. Jamais en --dry-run, jamais
+# pour un lot sans effet (doublons conservés, erreurs). Un échec de publication est un
+# `warn` (et passe /healthz en `degraded`) : il ne fait jamais échouer le lot.
+# Contrat complet : docs/DEPLOYMENT.md. Une valeur vide "" désactive la clé.
+#
+# UPLOADS PROGRESSIFS : les fichiers arrivent au fil de l'eau et sont rangés dès qu'ils sont
+# stables, donc le lot d'un scan est rarement tout l'upload. Annoncer chaque scan ferait
+# relancer un `files:scan` toutes les 30 s. L'annonce est donc RETENUE (et cumulée, y
+# compris les dossiers touchés) jusqu'à ce que l'input soit resté calme `quiet_secs`, sans
+# jamais dépasser `max_wait_secs`. Le rangement lui-même n'est jamais retardé.
+[notify]
+# Dossier qui reçoit <nom du dossier>.json, écrasé à chaque lot et écrit de façon atomique
+# (un lecteur ne voit jamais un JSON tronqué). Chemin absolu, hors de tout input et de
+# toute librairie ; créé au besoin. C'est le déclencheur DURABLE : un consommateur arrêté
+# lit l'événement à son retour (ex. une unité systemd .path sur ce dossier). Sous le
+# dossier d'état, il est déjà sur un volume persistant.
+# dir = "/var/lib/media-organizer/events"
+
+# En plus : POST du même JSON. http:// uniquement (l'image n'embarque pas de TLS), un seul
+# essai, envoi synchrone borné à 5 s au total : le récepteur doit répondre
+# 2xx tout de suite (voir docs/DEPLOYMENT.md, « Écrire un récepteur »). Un récepteur arrêté
+# PERD l'événement (le fichier ci-dessus, lui, reste). Depuis le conteneur, l'hôte s'atteint avec `extra_hosts:
+# ["host.docker.internal:host-gateway"]`.
+# webhook_url = "http://host.docker.internal:8123/batch"
+
+# Annonce quand plus aucun fichier n'a été rangé depuis N secondes (le délai se compte
+# depuis le DERNIER fichier). 0 = après chaque lot, sans attendre. Évalué à chaque scan :
+# le délai réel est arrondi au `poll_interval_secs` supérieur.
+# quiet_secs = 60
+
+# Plafond : une annonce n'est jamais retenue plus longtemps que ça après le PREMIER fichier
+# retenu, même si les uploads ne s'arrêtent pas (sinon un flux continu la repousserait
+# indéfiniment). Doit être >= quiet_secs. Un flux continu produit donc au plus un événement
+# par max_wait_secs.
+# max_wait_secs = 600
+
 # ── Dossiers ──────────────────────────────────────────────────────────────────────
 # Un [[folders]] par paire source → librairie. `input` et `library` sont des NOMS
 # (résolus sous inputs_root / libraries_root) ou des chemins absolus. La librairie ne

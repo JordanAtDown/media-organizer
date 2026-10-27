@@ -14,7 +14,7 @@ pris fait échouer le démarrage au lieu de tourner sans supervision.
 | --- | --- | --- |
 | `starting` | aucun scan terminé, mais dans le délai de grâce (ou un premier scan long qui progresse) | 200 |
 | `ok` | tout va bien | 200 |
-| `degraded` | actif, mais un `input` est absent ou des entrées sont bloquées en transit | 200 |
+| `degraded` | actif, mais un `input` est absent, des entrées sont bloquées en transit, ou la dernière annonce de lot a échoué (`notify.*.last_error`) | 200 |
 | `stale` | plus aucun progrès : typiquement un `stat()` bloqué sur un montage NFS figé | **503** |
 
 ## Règle de péremption
@@ -54,6 +54,15 @@ blocage qu'un watchdog NAS existe pour détecter.
   },
   "pending_in_staging": 0,
   "caches": { "no_date": 0, "duplicates": 0, "hash_index": 0 },
+  "notify": {
+    "telephone": {
+      "seq": 42,
+      "finished_at": 1792687600,
+      "committed": 2,
+      "deleted_sources": 0,
+      "last_error": null
+    }
+  },
   "folders": [
     {
       "name": "telephone",
@@ -83,8 +92,13 @@ blocage qu'un watchdog NAS existe pour détecter.
 | `pending_in_staging` | entrées préparées mais non publiées. **Non nul durablement = un commit échoue en boucle** |
 | `totals.duplicates` | doublons détectés (laissés en place, sauf `delete_source_duplicates`) |
 | `totals.panics` | un fichier a fait paniquer le code ; il est isolé, mais à investiguer |
+| `notify.<dossier>` | **seulement si `[notify]` est configuré.** Dernier lot annoncé : `seq`, `finished_at` (secondes Unix), `committed`, `deleted_sources`. Restauré après un redémarrage (`state_dir/notify.json`). Voir [DEPLOYMENT.md](DEPLOYMENT.md#annonce-de-fin-de-lot-notify) |
+| `notify.<dossier>.last_error` | pourquoi la dernière annonce a échoué (fichier d'événement, webhook), nul sinon. Non nul = `degraded`, jusqu'à l'annonce suivante qui réussit |
 | `folders[].input_exists` | `false` = montage pas (encore) prêt |
 | `folders[].last_error` | dernière erreur de ce dossier |
+
+Un `notify` qui ne change pas n'est **pas** une panne : aucun événement n'est publié quand rien
+n'a été rangé. N'alertez pas sur l'âge de `finished_at` seul.
 
 `phase`, `current_folder`, `last_scan` et `uptime_secs` sont des instantanés ; les `totals`
 sont cumulés depuis le démarrage du processus, `folders[]` décrit le **dernier** scan.

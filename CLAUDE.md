@@ -18,14 +18,16 @@ scripts/smoke-test.sh IMAGE           # bout en bout, en conteneur
 
 | Module | Rôle |
 | --- | --- |
-| `scanner` | orchestre les 5 phases ; seul à connaître l'ordre |
+| `scanner/` | orchestre les 5 phases ; seul à connaître l'ordre (`mod.rs`) — une sous-unité par phase : `inventory`, `planning`, `duplicates`, `dry_run` |
 | `plan` | phase 2 — date + destination, **lecture seule** |
 | `resolve` | phase 3 — doublons et noms finaux, **en mémoire** |
 | `staging` | phases 4-5 — transit, journal, commit, reprise |
 | `dedup` / `state` | empreintes BLAKE3 ; les trois caches JSON |
 | `date_reader` / `metadata/` | chaîne de date : EXIF → QuickTime → nom → mtime |
-| `naming` / `fsops` | motif de destination ; primitives (modes, lien-ou-copie) |
+| `naming` / `fsops` | motif de destination ; primitives (modes, lien-ou-copie, `write_atomic`) |
 | `config` / `cli` | schéma TOML + validation ; flags et variables `MO_*` |
+| `notify/` | annonce de fin de lot : événement fichier atomique, `seq` persistant, webhook |
+| `http` | client HTTP minimal (sonde `healthcheck`, webhook), sans dépendance ni TLS |
 | `health/` / `shutdown` / `daemon` | `/healthz`, signaux, boucle de scan |
 
 ## Règles

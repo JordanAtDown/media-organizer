@@ -38,6 +38,11 @@ file_mode = "0666"
 dir_mode  = "0777"
 [health]
 startup_grace_secs = 30
+# No debounce here: the batch must be announced by the very scan that organized it.
+[notify]
+dir = "/var/lib/media-organizer/events"
+quiet_secs = 0
+max_wait_secs = 0
 [[folders]]
 input   = "in"        # → /inputs/in
 library = "photos"    # → /libraries/photos
@@ -61,7 +66,7 @@ run --dry-run --once --health-bind "" >/dev/null 2>&1
 [[ -z "$(ls -A "$OUT")" ]]    || fail "dry-run wrote into output"
 [[ -z "$(ls -A "$STATE")" ]]  || fail "dry-run wrote state"
 [[ -f "$IN/IMG-20250626-WA0002.jpg" ]] || fail "dry-run moved a source"
-ok "dry-run writes nothing"
+ok "dry-run writes nothing (no batch event either)"
 
 # 2 ── a real pass ─────────────────────────────────────────────────────────────
 LOG="$(run --once --health-bind "" 2>&1)"
@@ -94,6 +99,18 @@ ok "EXIF date injected from the file name"
 [[ -z "$(find "$IN" -maxdepth 1 -type f)" ]] || fail "sources left behind: $(ls "$IN")"
 ok "work area empty, nothing left in the library, sources consumed"
 
+# The batch was announced: one atomic event file, readable by another uid, no temporary.
+EVENT="$STATE/events/in.json"
+[[ -f "$EVENT" ]] || fail "no batch event was written (have: $(cd "$STATE" && find . -type f | sort | tr '\n' ' '))"
+grep -q '"folder":"in","seq":1,' "$EVENT"    || fail "unexpected event: $(cat "$EVENT")"
+grep -q '"committed":5,"deleted_sources":0,' "$EVENT" || fail "unexpected counts: $(cat "$EVENT")"
+grep -q '"library_dirs":\["2021/03","2022/06","2025/04","2025/06","2026/02"\]' "$EVENT" \
+    || fail "unexpected library_dirs: $(cat "$EVENT")"
+grep -q '"input_dirs":\["\."\]' "$EVENT" || fail "unexpected input_dirs: $(cat "$EVENT")"
+[[ "$(stat -c %a "$EVENT")" == 644 ]] || fail "event mode $(stat -c %a "$EVENT")"
+[[ -z "$(find "$STATE/events" -mindepth 2 -type f)" ]] || fail "a temporary was left in events/.tmp"
+ok "one batch event: seq 1, 5 files, relative directories, mode 644"
+
 # 3 ── a copy of an organized file is a duplicate: left alone, remembered ─────
 cp "$OUT/2025/06/2025-06-26_120000_IMG-20250626-WA0002.jpg" "$IN/IMG-20250626-WA0002.jpg"
 run --once --health-bind "" >/dev/null 2>&1
@@ -101,6 +118,8 @@ run --once --health-bind "" >/dev/null 2>&1
 [[ -z "$(find "$OUT" -name '*_1.jpg')" ]] || fail "a duplicate got a _1 suffix"
 grep -q 'IMG-20250626-WA0002.jpg' "$STATE/duplicates.json" || fail "duplicate not remembered"
 ok "duplicate left in place, remembered, no _1"
+grep -q '"seq":1,' "$EVENT" || fail "a kept duplicate was announced: $(cat "$EVENT")"
+ok "a batch that changed nothing announces nothing"
 
 # 4 ── daemon mode: healthz, then a prompt and clean stop ─────────────────────
 docker run -d --name "$NAME" "${PLATFORM[@]}" \
@@ -118,6 +137,9 @@ BODY="$(curl -fsS "http://127.0.0.1:$PORT/healthz")"
 grep -q '"status": "ok"' <<<"$BODY" || fail "healthz is not ok: $BODY"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/livez")" == 200 ]] || fail "livez"
 ok "healthz ok, livez 200"
+grep -q '"notify"' <<<"$BODY" || fail "healthz has no notify block: $BODY"
+grep -q '"seq": 1' <<<"$BODY"  || fail "healthz does not report the last announced batch: $BODY"
+ok "healthz restores the last announced batch after a restart"
 
 START="$(date +%s.%N)"
 docker stop -t 10 "$NAME" >/dev/null

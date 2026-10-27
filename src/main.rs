@@ -6,6 +6,7 @@ use media_organizer::config::Config;
 use media_organizer::daemon;
 use media_organizer::health::{client, HealthServer, HealthState};
 use media_organizer::logtime::LocalTime;
+use media_organizer::notify::{Changes, Notifier};
 use media_organizer::scanner::Scanner;
 use media_organizer::shutdown::Shutdown;
 use media_organizer::staging::Staging;
@@ -85,6 +86,7 @@ fn healthcheck(
 
 fn recover(config: &Config, state_dir: &std::path::Path) -> Result<ExitCode> {
     let work_root = config.work_root(state_dir);
+    let mut notifier = Notifier::new(&config.notify, state_dir);
     for folder in &config.folders {
         let staging = Staging::new(
             folder.work_subdir(&work_root),
@@ -99,6 +101,15 @@ fn recover(config: &Config, state_dir: &std::path::Path) -> Result<ExitCode> {
             report.committed.len(),
             report.failed.len()
         );
+        // A replay publishes into the libraries like any batch: announce it. Now,
+        // not after the debounce: this process exits and no later scan would flush it.
+        if let Some(notifier) = &mut notifier {
+            let mut changes = Changes::new(&folder.input, &folder.library);
+            for (source, dest) in report.published() {
+                changes.committed(source, dest);
+            }
+            notifier.announce_now(folder, changes, unix_now());
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -135,6 +146,7 @@ fn run_daemon(cli: &Cli, settings: media_organizer::cli::Settings) -> Result<Exi
     let interval = Duration::from_secs(config.poll_interval_secs);
     let mut scanner =
         Scanner::new(config, settings.state_dir, cli.dry_run).context("starting the scanner")?;
+    health.restore_notify(scanner.last_events());
 
     let summary = daemon::run(&mut scanner, &health, &shutdown, interval, cli.once);
 
@@ -152,4 +164,10 @@ fn run_daemon(cli: &Cli, settings: media_organizer::cli::Settings) -> Result<Exi
     }
     info!("media-organizer stopped");
     Ok(ExitCode::SUCCESS)
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }

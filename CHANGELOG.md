@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `[notify]` (disabled by default): announce the end of each folder's batch, so the
+  infrastructure can rescan what changed (Nextcloud needs `occ files:scan`; the
+  container cannot run it). Two optional sinks:
+  - `notify.dir`: `<dir>/<folder>.json`, overwritten at each batch and written atomically
+    (temporary file in `<dir>/.tmp/`, then `rename`), so a reader never sees a truncated
+    JSON nor is woken early by a temporary. Carries a `seq` that grows per folder (kept in
+    `state_dir/notify.json`, so it survives restarts), the counts, and the directories
+    touched — relative to the library (`library_dirs`) and to the input (`input_dirs`,
+    covering moved files and removed duplicate sources).
+  - `notify.webhook_url`: the same JSON in a `POST` (`http://` only, one synchronous
+    attempt bounded by a 5 s deadline for the whole exchange, name lookup included; a
+    receiver must answer `2xx` at once). The health probe gets the same global deadline.
+  One event per folder; none in `--dry-run`, none for a batch that changed nothing.
+  Uploads trickle in and are organized as they arrive, so the announcement is **held**
+  and merged (files and touched directories) until the input has been quiet for
+  `notify.quiet_secs` (default 60), but never longer than `notify.max_wait_secs`
+  (default 600) after the first held change, so a continuous flow cannot postpone it
+  forever. Organizing itself is never delayed. Held changes are persisted in
+  `state_dir/notify.json`; `quiet_secs = 0` announces after every batch. A failure is a `warn`, never a failed batch. `recover`
+  announces what it publishes; so does a replay at startup, including files published
+  just before a crash.
+- `/healthz`: a `notify` block (only when configured) with the last `seq`, date and counts
+  per folder, and `last_error`; `status` is `degraded` while the last announcement failed.
+
+### Changed
+- Internal, no behaviour change: `scanner.rs` is split by phase (`scanner/`), the HTTP
+  probe and the webhook share a small `http` module (still no dependency), and the
+  journal, the caches and the event share `fsops::write_atomic`. Caches are now fsynced
+  before the rename, like the journal already was.
+
 ---
 
 ## [1.2.0] - 2026-10-27

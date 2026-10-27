@@ -74,6 +74,28 @@ pub struct CommitReport {
     /// Entries that could not be published. They stay staged and journaled and
     /// are retried on the next scan; the rest of the batch is unaffected.
     pub failed: Vec<(Entry, String)>,
+    /// Replay only: journal entries found already published — neither the staged
+    /// file nor the source is left (a crash after the publish, before the journal
+    /// was rewritten). Nothing is done for them, but the interrupted batch was
+    /// never announced. An entry whose source is still there is not one: its
+    /// file will simply be organized again.
+    pub already_published: Vec<Entry>,
+}
+
+impl CommitReport {
+    /// `(source, final_dest)` of every file this report accounts for as published,
+    /// including those a replay found already in place.
+    pub fn published(&self) -> impl Iterator<Item = (&Path, &Path)> {
+        let committed = self
+            .committed
+            .iter()
+            .map(|c| (c.source.as_path(), c.final_dest.as_path()));
+        let earlier = self
+            .already_published
+            .iter()
+            .map(|e| (e.source.as_path(), e.final_dest.as_path()));
+        committed.chain(earlier)
+    }
 }
 
 /// Hidden temporary name next to the destination: `dir/.<name>.mo-part`.
@@ -431,7 +453,8 @@ impl Staging {
                 "dropping journal entries already published"
             );
         }
-        let report = self.commit(live)?;
+        let mut report = self.commit(live)?;
+        report.already_published = gone.into_iter().filter(|e| !e.source.exists()).collect();
         self.purge_orphans();
         Ok(report)
     }
